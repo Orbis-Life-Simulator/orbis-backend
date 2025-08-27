@@ -1,13 +1,21 @@
-from fastapi import FastAPI
-from . import models, database
-from .routers import species
+from fastapi import FastAPI, Depends
+from sqlalchemy.orm import Session
+from . import models
+from .database import engine, SessionLocal
 
-models.Base.metadata.create_all(bind=database.engine)
+# Criar as tabelas no banco
+models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Orbis Backend API")
+app = FastAPI(title="Orbis API")
 
-app.include_router(species.router)
+# Dependência para usar o banco em rotas
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 @app.get("/")
-def root():
-    return {"message": "Bem-vindo ao Orbis!"}
+def read_root():
+    return {"message": "Orbis API rodando 🚀"}
