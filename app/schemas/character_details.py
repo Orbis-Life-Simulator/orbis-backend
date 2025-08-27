@@ -1,0 +1,49 @@
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+
+# --- Schemas para CharacterRelationship ---
+class CharacterRelationshipBase(BaseModel):
+    character_a_id: int
+    character_b_id: int
+    relationship_score: float
+
+class CharacterRelationshipCreate(CharacterRelationshipBase):
+    pass
+
+class CharacterRelationship(CharacterRelationshipBase):
+    id: int
+    last_interaction: datetime
+
+    class Config:
+        orm_mode = True
+
+# --- Schemas para CharacterAttributes ---
+class CharacterAttributeBase(BaseModel):
+    character_id: int
+    attribute_name: str
+    attribute_value: int
+
+class CharacterAttributeCreate(CharacterAttributeBase):
+    pass
+
+class CharacterAttribute(CharacterAttributeBase):
+    id: int
+
+    class Config:
+        orm_mode = True
+
+# --- Schemas para CharacterInventory ---
+class CharacterInventoryBase(BaseModel):
+    character_id: int
+    resource_type_id: int
+    quantity: int
+
+class CharacterInventoryCreate(CharacterInventoryBase):
+    pass
+
+class CharacterInventory(CharacterInventoryBase):
+    id: int
+
+    class Config:
+        orm_mode = True
