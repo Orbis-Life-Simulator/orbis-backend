@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
+from app.dependencies import get_db
+
 from ..database import models
 from ..schemas import clans as clan_schemas
 from ..database.database import SessionLocal
@@ -11,13 +13,6 @@ router = APIRouter(
 	tags=["Clans"],
 	responses={404: {"description": "Not found"}},
 )
-
-def get_db():
-	db = SessionLocal()
-	try:
-		yield db
-	finally:
-		db.close()
 
 @router.post("/", response_model=clan_schemas.Clan, status_code=201)
 def create_clan(clan: clan_schemas.ClanCreate, db: Session = Depends(get_db)):

@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
+from app.dependencies import get_db
+
 from ..database import models
 from ..schemas import relationships as rel_schemas
 from ..database.database import SessionLocal
@@ -11,15 +13,6 @@ router = APIRouter(
 	tags=["Relationships"],
 	responses={404: {"description": "Not found"}},
 )
-
-def get_db():
-	db = SessionLocal()
-	try:
-		yield db
-	finally:
-		db.close()
-
-# --- Rotas para Species Relationships ---
 
 @router.post("/species", response_model=rel_schemas.SpeciesRelationship, status_code=201)
 def create_species_relationship(relationship: rel_schemas.SpeciesRelationshipCreate, db: Session = Depends(get_db)):

@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
+from app.dependencies import get_db
+
 from ..database import models
 from ..schemas import game_elements as ge_schemas
 from ..database.database import SessionLocal
@@ -11,15 +13,6 @@ router = APIRouter(
 	tags=["World Elements"],
 	responses={404: {"description": "Not found"}},
 )
-
-def get_db():
-	db = SessionLocal()
-	try:
-		yield db
-	finally:
-		db.close()
-
-# --- Rotas para ResourceTypes (Tipos de Recursos) ---
 
 @router.post("/resources", response_model=ge_schemas.ResourceType, status_code=201)
 def create_resource_type(resource: ge_schemas.ResourceTypeCreate, db: Session = Depends(get_db)):

@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
+from app.dependencies import get_db
+
 from ..database import models
 from ..schemas import game_elements as ge_schemas
 from ..database.database import SessionLocal
@@ -11,13 +13,6 @@ router = APIRouter(
 	tags=["Missions"],
 	responses={404: {"description": "Not found"}},
 )
-
-def get_db():
-	db = SessionLocal()
-	try:
-		yield db
-	finally:
-		db.close()
 
 @router.post("/", response_model=ge_schemas.Mission, status_code=201)
 def create_mission(mission: ge_schemas.MissionCreate, db: Session = Depends(get_db)):

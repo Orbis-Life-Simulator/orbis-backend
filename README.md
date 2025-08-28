@@ -12,3 +12,4 @@ A aplicação é desenvolvida em Python utilizando o framework FastAPI e se comu
 - **IA:** Máquina de Estados Finitos (FSM) com a biblioteca `transitions`
 
 source venv/Scripts/activate
+deactivate

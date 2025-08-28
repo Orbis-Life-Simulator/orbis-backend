@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
+from app.dependencies import get_db
+
 from ..database import models
 from ..schemas import characters as char_schemas
 from ..database.database import SessionLocal
@@ -11,13 +13,6 @@ router = APIRouter(
     tags=["Characters"],
     responses={404: {"description": "Not found"}},
 )
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 @router.post("/", response_model=char_schemas.Character, status_code=201)
 def create_character(character: char_schemas.CharacterCreate, db: Session = Depends(get_db)):

@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
+from app.dependencies import get_db
+
 from ..database import models
 from ..schemas import world as world_schemas
 from ..database.database import SessionLocal
@@ -11,12 +13,6 @@ router = APIRouter(
 	tags=["Event Logs"],
 )
 
-def get_db():
-	db = SessionLocal()
-	try:
-		yield db
-	finally:
-		db.close()
 
 @router.get("/{world_id}", response_model=List[world_schemas.EventLog])
 def get_world_events(

@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
+from app.dependencies import get_db
+
 from ..database import models
 from ..schemas import world as world_schemas
-# Supondo que a lógica da simulação estará em simulation_engine
-# from ..simulation import simulation_engine 
 from ..database.database import SessionLocal
 
 router = APIRouter(
@@ -13,13 +13,6 @@ router = APIRouter(
 	tags=["World & Simulation"],
 	responses={404: {"description": "Not found"}},
 )
-
-def get_db():
-	db = SessionLocal()
-	try:
-		yield db
-	finally:
-		db.close()
 
 @router.post("/", response_model=world_schemas.World, status_code=201)
 def create_world(world: world_schemas.WorldCreate, db: Session = Depends(get_db)):

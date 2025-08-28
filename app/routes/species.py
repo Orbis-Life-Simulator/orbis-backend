@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
+from app.dependencies import get_db
+
 from ..database import models
 from ..schemas import species as species_schemas
 from ..database.database import SessionLocal
@@ -11,14 +13,6 @@ router = APIRouter(
 	tags=["Species"],
 	responses={404: {"description": "Not found"}},
 )
-
-# Dependência para obter a sessão do DB
-def get_db():
-	db = SessionLocal()
-	try:
-		yield db
-	finally:
-		db.close()
 
 @router.post("/", response_model=species_schemas.Species, status_code=201)
 def create_species(species: species_schemas.SpeciesCreate, db: Session = Depends(get_db)):
