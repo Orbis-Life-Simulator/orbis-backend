@@ -9,6 +9,7 @@ class CharacterBase(BaseModel):
     position_x: float
     position_y: float
     current_state: str
+    target_character_id: Optional[int]
 
 class CharacterCreate(CharacterBase):
     pass
@@ -21,6 +22,7 @@ class CharacterUpdate(BaseModel):
     position_x: Optional[float] = None
     position_y: Optional[float] = None
     current_state: Optional[str] = None
+    target_character_id: Optional[int] = None
 
 class Character(CharacterBase):
     id: int
