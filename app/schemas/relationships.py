@@ -10,7 +10,7 @@ class SpeciesRelationshipType(str, Enum):
 class SpeciesRelationshipBase(BaseModel):
     species_a_id: int
     species_b_id: int
-    relationship: SpeciesRelationshipType
+    relationship_type: SpeciesRelationshipType
 
 class SpeciesRelationshipCreate(SpeciesRelationshipBase):
     pass

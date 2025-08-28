@@ -5,3 +5,4 @@ pydantic
 alembic
 databases
 python-dotenv
+websockets

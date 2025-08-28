@@ -71,6 +71,7 @@ class Character(Base):
 	position_x = Column(Float, default=0.0)
 	position_y = Column(Float, default=0.0)
 	current_state = Column(String, default="VAGANDO")
+	target_character_id = Column(Integer, ForeignKey("characters.id"), nullable=True)
 	world = relationship("World", back_populates="characters")
 	species = relationship("Species", back_populates="characters")
 	clan = relationship("Clan", back_populates="characters")

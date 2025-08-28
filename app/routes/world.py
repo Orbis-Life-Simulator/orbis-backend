@@ -6,7 +6,8 @@ from app.dependencies import get_db
 
 from ..database import models
 from ..schemas import world as world_schemas
-from ..database.database import SessionLocal
+
+from ..simulation import engine
 
 router = APIRouter(
 	prefix="/api/worlds",
@@ -53,11 +54,12 @@ def advance_simulation_tick(world_id: int, db: Session = Depends(get_db)):
 		raise HTTPException(404, "World not found")
 	
 	# --- CHAMADA PARA O MOTOR DA SIMULAÇÃO ---
-	# simulation_engine.process_tick(db, world_id)
-	# Por enquanto, vamos apenas incrementar o tick manualmente
+	engine.process_tick(db, world_id)
 	
+	# Incrementa o tick do mundo
 	db_world.current_tick += 1
-	db.commit()
+	
+	db.commit() # Salva todas as alterações feitas pelo motor e o incremento do tick
 	db.refresh(db_world)
 	
 	return db_world
