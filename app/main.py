@@ -1,16 +1,14 @@
-from fastapi import FastAPI
-from .database.database import engine, Base
+# app/main.py
 
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+
+from .database.database import engine, Base
 from .routes import (
-	species, 
-	characters, 
-	clans, 
-	world, 
-	events,
-	relationships,      
-	game_elements,     
-	missions            
+	species, characters, clans, world, events,
+	relationships, game_elements, missions            
 )
+from .simulation.connection_manager import manager
 
 Base.metadata.create_all(bind=engine)
 
@@ -20,6 +18,26 @@ app = FastAPI(
 	version="0.1.0"
 )
 
+# ===================================================================
+# O MIDDLEWARE CORS DEVE VIR AQUI!
+# ANTES de incluir qualquer rota.
+# ===================================================================
+origins = [
+    "http://localhost",
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# ===================================================================
+
+# Agora, inclua as rotas
 app.include_router(species.router)
 app.include_router(characters.router)
 app.include_router(clans.router)
@@ -31,7 +49,13 @@ app.include_router(missions.router)
 
 @app.get("/", tags=["Root"])
 def read_root():
-	"""
-	Endpoint raiz para verificar se a API está funcionando.
-	"""
 	return {"message": "Bem-vindo à API do mundo de Orbis!"}
+
+@app.websocket("/ws/{world_id}")
+async def websocket_endpoint(websocket: WebSocket, world_id: int):
+    await manager.connect(websocket, world_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, world_id)

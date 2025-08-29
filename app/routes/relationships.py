@@ -51,3 +51,16 @@ def get_all_clan_relationships(db: Session = Depends(get_db)):
 	Lista todas as relações políticas ativas entre clãs.
 	"""
 	return db.query(models.ClanRelationship).all()
+
+@router.delete("/species/{relationship_id}", status_code=204)
+def delete_species_relationship(relationship_id: int, db: Session = Depends(get_db)):
+	"""
+	Deleta uma relação entre espécies pelo seu ID.
+	"""
+	db_rel = db.query(models.SpeciesRelationship).filter(models.SpeciesRelationship.id == relationship_id).first()
+	if db_rel is None:
+		raise HTTPException(status_code=404, detail="Relationship not found")
+	
+	db.delete(db_rel)
+	db.commit()
+	return # Retorna uma resposta vazia com status 204 No Content

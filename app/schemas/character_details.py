@@ -16,7 +16,7 @@ class CharacterRelationship(CharacterRelationshipBase):
     last_interaction: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- Schemas para CharacterAttributes ---
 class CharacterAttributeBase(BaseModel):
@@ -31,7 +31,7 @@ class CharacterAttribute(CharacterAttributeBase):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- Schemas para CharacterInventory ---
 class CharacterInventoryBase(BaseModel):
@@ -46,4 +46,4 @@ class CharacterInventory(CharacterInventoryBase):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True

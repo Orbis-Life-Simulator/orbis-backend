@@ -177,18 +177,24 @@ class Territory(Base):
 	end_y = Column(Float, nullable=False)
 	world = relationship("World", back_populates="territories")
 	owner_clan = relationship("Clan")
-	resources = relationship("TerritoryResource", back_populates="territory", cascade="all, delete-orphan")
+	# A linha abaixo foi alterada:
+	resource_nodes = relationship("ResourceNode", back_populates="territory", cascade="all, delete-orphan")
 
 # Tabela 13: TerritoryResources
-class TerritoryResource(Base):
-	__tablename__ = "territory_resources"
+class ResourceNode(Base):
+    __tablename__ = "resource_nodes"
 
-	id = Column(Integer, primary_key=True, index=True)
-	territory_id = Column(Integer, ForeignKey("territories.id"), nullable=False, index=True)
-	resource_type_id = Column(Integer, ForeignKey("resource_types.id"), nullable=False, index=True)
-	abundance = Column(Float, default=1.0)
-	territory = relationship("Territory", back_populates="resources")
-	resource_type = relationship("ResourceType")
+    id = Column(Integer, primary_key=True, index=True)
+    territory_id = Column(Integer, ForeignKey("territories.id"), nullable=False, index=True)
+    resource_type_id = Column(Integer, ForeignKey("resource_types.id"), nullable=False, index=True)
+    position_x = Column(Float, nullable=False)
+    position_y = Column(Float, nullable=False)
+    quantity = Column(Integer, default=10) # Quantidade inicial finita
+    is_depleted = Column(Boolean, default=False) # Se está esgotado
+    # Futuramente: respawn_tick
+
+    territory = relationship("Territory", back_populates="resource_nodes")
+    resource_type = relationship("ResourceType")
 
 # Tabela 14: Missions
 class Mission(Base):
@@ -216,3 +222,5 @@ class MissionObjective(Base):
 	target_quantity = Column(Integer, default=1)
 	is_complete = Column(Boolean, default=False)
 	mission = relationship("Mission", back_populates="objectives")
+
+

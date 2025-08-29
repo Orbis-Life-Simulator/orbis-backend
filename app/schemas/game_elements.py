@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
 from enum import Enum
@@ -15,7 +15,7 @@ class ResourceTypeCreate(ResourceTypeBase):
 class ResourceType(ResourceTypeBase):
     id: int
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- Schemas para Territories ---
 class TerritoryBase(BaseModel):
@@ -32,7 +32,7 @@ class TerritoryCreate(TerritoryBase):
 class Territory(TerritoryBase):
     id: int
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- Schemas para Missions ---
 class MissionStatus(str, Enum):
@@ -52,7 +52,7 @@ class Mission(MissionBase):
     id: int
     created_at: datetime
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- Schemas para MissionObjectives ---
 class ObjectiveType(str, Enum):
@@ -74,4 +74,13 @@ class MissionObjectiveCreate(MissionObjectiveBase):
 class MissionObjective(MissionObjectiveBase):
     id: int
     class Config:
-        orm_mode = True
+        from_attributes = True
+
+class ResourceNode(BaseModel):
+    id: int
+    position_x: float
+    position_y: float
+    resource_type_id: int
+    is_depleted: bool
+
+    model_config = ConfigDict(from_attributes=True)

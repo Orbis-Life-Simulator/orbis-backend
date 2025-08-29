@@ -19,7 +19,7 @@ class SpeciesRelationship(SpeciesRelationshipBase):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 # Enum para os tipos de relacionamento entre clãs
@@ -40,4 +40,4 @@ class ClanRelationship(ClanRelationshipBase):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
