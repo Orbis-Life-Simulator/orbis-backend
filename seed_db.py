@@ -199,6 +199,7 @@ try:
                 models.ResourceNode(
                     world_id=world.id,  # Associando o nó ao mundo
                     resource_type_id=resource.id,
+                    territory_id=territory.id,
                     position_x=random.uniform(territory.start_x, territory.end_x),
                     position_y=random.uniform(territory.start_y, territory.end_y),
                     quantity=random.randint(int(avg_qty * 0.5), int(avg_qty * 1.5)),
