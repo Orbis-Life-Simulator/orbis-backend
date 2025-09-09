@@ -1,43 +1,38 @@
+# seed.py
+
 import sys, os, random
 from sqlalchemy.orm import Session
 
 # --- Configuração de Path ---
-# Esta é uma manobra comum em Python para garantir que o script, mesmo quando
-# executado da raiz do projeto, possa encontrar e importar módulos da pasta 'app'.
-# Ele adiciona o diretório atual ao caminho de busca de módulos do Python.
+# Garante que o script possa encontrar e importar módulos da pasta 'app'.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
 
 # --- Importações da Aplicação ---
-# Importa os componentes necessários do banco de dados e os modelos SQLAlchemy.
 from app.database.database import engine, SessionLocal, Base
 from app.database import models
+
+# ATUALIZADO: Importa os Enums para garantir a integridade dos dados.
+from app.database.models import (
+    RelationshipTypeEnum,
+    ClanRelationshipTypeEnum,
+    ObjectiveTypeEnum,
+)
 
 print("Iniciando o Construtor de Cenários AVANÇADO para o Mundo de Orbis...")
 
 # --- Reset e Criação do Banco de Dados ---
-# ATENÇÃO: 'drop_all' apaga TODAS as tabelas existentes.
-# Isso garante que cada execução do script comece com um banco de dados limpo.
 Base.metadata.drop_all(bind=engine)
-# 'create_all' cria todas as tabelas definidas nos seus modelos que herdam de 'Base'.
 Base.metadata.create_all(bind=engine)
 
-# Cria uma nova sessão com o banco de dados para esta operação de seeding.
 db: Session = SessionLocal()
 
-# O bloco try...finally garante que a sessão do banco de dados seja sempre fechada,
-# mesmo que ocorra um erro durante o processo de seeding.
 try:
     # --- 1. MUNDO, ESPÉCIES, RELAÇÕES E RECURSOS (BASE SÓLIDA) ---
-    # Esta seção cria as regras e os "tijolos" fundamentais do mundo.
-    # São os elementos que raramente mudam e definem a física e a biologia da simulação.
     print("Estabelecendo as fundações do mundo...")
-
-    # Cria a instância principal do mundo, o contêiner para toda a simulação.
     world = models.World(name="Mundo Padrão", map_width=1000, map_height=1000)
     db.add(world)
-    db.flush()  # Envia as mudanças para o DB para que 'world.id' seja gerado e possa ser usado.
+    db.flush()
 
-    # Define os "blueprints" de todas as espécies que podem existir.
     species_data = [
         {"name": "Anão", "base_health": 120, "base_strength": 15},
         {"name": "Humano", "base_health": 100, "base_strength": 10},
@@ -48,34 +43,32 @@ try:
         {"name": "Troll", "base_health": 200, "base_strength": 25},
         {"name": "Zumbi", "base_health": 100, "base_strength": 10},
     ]
-    # Usa um dicionário ('map') para acesso rápido aos objetos Species pelo nome.
     species_map = {data["name"]: models.Species(**data) for data in species_data}
-    [db.add(s) for s in species_map.values()]
+    db.add_all(species_map.values())
     db.flush()
 
-    # Define as relações padrão e inatas entre as espécies.
     relationships = [
-        ("Anão", "Humano", "FRIEND"),
-        ("Anão", "Elfo", "ENEMY"),
-        ("Anão", "Fada", "ENEMY"),
-        ("Anão", "Orc", "ENEMY"),
-        ("Anão", "Goblin", "ENEMY"),
-        ("Anão", "Troll", "ENEMY"),
-        ("Humano", "Elfo", "FRIEND"),
-        ("Humano", "Fada", "FRIEND"),
-        ("Humano", "Orc", "ENEMY"),
-        ("Humano", "Troll", "ENEMY"),
-        ("Humano", "Goblin", "ENEMY"),
-        ("Fada", "Elfo", "INDIFFERENT"),
-        ("Fada", "Troll", "ENEMY"),
-        ("Fada", "Orc", "ENEMY"),
-        ("Fada", "Goblin", "ENEMY"),
-        ("Elfo", "Orc", "ENEMY"),
-        ("Elfo", "Troll", "ENEMY"),
-        ("Elfo", "Goblin", "ENEMY"),
-        ("Orc", "Troll", "FRIEND"),
-        ("Orc", "Goblin", "FRIEND"),
-        ("Goblin", "Troll", "FRIEND"),
+        ("Anão", "Humano", RelationshipTypeEnum.FRIEND),
+        ("Anão", "Elfo", RelationshipTypeEnum.ENEMY),
+        ("Anão", "Fada", RelationshipTypeEnum.ENEMY),
+        ("Anão", "Orc", RelationshipTypeEnum.ENEMY),
+        ("Anão", "Goblin", RelationshipTypeEnum.ENEMY),
+        ("Anão", "Troll", RelationshipTypeEnum.ENEMY),
+        ("Humano", "Elfo", RelationshipTypeEnum.FRIEND),
+        ("Humano", "Fada", RelationshipTypeEnum.FRIEND),
+        ("Humano", "Orc", RelationshipTypeEnum.ENEMY),
+        ("Humano", "Troll", RelationshipTypeEnum.ENEMY),
+        ("Humano", "Goblin", RelationshipTypeEnum.ENEMY),
+        ("Fada", "Elfo", RelationshipTypeEnum.INDIFFERENT),
+        ("Fada", "Troll", RelationshipTypeEnum.ENEMY),
+        ("Fada", "Orc", RelationshipTypeEnum.ENEMY),
+        ("Fada", "Goblin", RelationshipTypeEnum.ENEMY),
+        ("Elfo", "Orc", RelationshipTypeEnum.ENEMY),
+        ("Elfo", "Troll", RelationshipTypeEnum.ENEMY),
+        ("Elfo", "Goblin", RelationshipTypeEnum.ENEMY),
+        ("Orc", "Troll", RelationshipTypeEnum.FRIEND),
+        ("Orc", "Goblin", RelationshipTypeEnum.FRIEND),
+        ("Goblin", "Troll", RelationshipTypeEnum.FRIEND),
     ]
     for r in relationships:
         db.add(
@@ -86,7 +79,6 @@ try:
             )
         )
 
-    # Define os tipos de recursos que podem ser encontrados no mundo.
     resource_data = [
         {"name": "Peixe", "category": "COMIDA", "base_value": 5},
         {"name": "Baga Silvestre", "category": "COMIDA", "base_value": 3},
@@ -95,15 +87,11 @@ try:
         {"name": "Pedra", "category": "MATERIAL", "base_value": 4},
     ]
     resource_map = {data["name"]: models.ResourceType(**data) for data in resource_data}
-    [db.add(r) for r in resource_map.values()]
+    db.add_all(resource_map.values())
     db.flush()
 
     # --- 2. TERRITÓRIOS E NÓS DE RECURSOS (MUNDO RICO) ---
-    # Esta seção dá forma ao mapa, criando regiões geográficas e distribuindo
-    # os recursos definidos anteriormente pelo mundo.
     print("Distribuindo recursos e definindo territórios...")
-
-    # Define as áreas nomeadas do mapa com suas coordenadas.
     territories_data = [
         {
             "name": "Valmor (Capital Humana)",
@@ -173,10 +161,9 @@ try:
         data["name"]: models.Territory(world_id=world.id, **data)
         for data in territories_data
     }
-    [db.add(t) for t in territory_map.values()]
+    db.add_all(territory_map.values())
     db.flush()
 
-    # Espalha os "nós" de recursos (árvores, minas, etc.) dentro dos territórios.
     resource_nodes_to_create = [
         ("Valmor (Capital Humana)", "Baga Silvestre", 5, 20),
         ("Valmor (Capital Humana)", "Pedra", 8, 15),
@@ -197,8 +184,9 @@ try:
         for _ in range(count):
             db.add(
                 models.ResourceNode(
-                    world_id=world.id,  # Associando o nó ao mundo
+                    world_id=world.id,
                     resource_type_id=resource.id,
+                    territory_id=territory.id,
                     position_x=random.uniform(territory.start_x, territory.end_x),
                     position_y=random.uniform(territory.start_y, territory.end_y),
                     quantity=random.randint(int(avg_qty * 0.5), int(avg_qty * 1.5)),
@@ -206,11 +194,7 @@ try:
             )
 
     # --- 3. CLÃS E PERSONAGENS (VIDA INICIAL) ---
-    # Esta seção dá vida ao mundo, criando as facções (clãs) e os indivíduos
-    # (personagens) que irão interagir e evoluir na simulação.
     print("Povoando o mundo com clãs e personagens...")
-
-    # Define os clãs, suas espécies principais e seus territórios natais.
     clans_data = [
         {
             "name": "Reino de Valmor",
@@ -258,13 +242,28 @@ try:
         )
         db.add(clan)
         db.flush()
-        home_territory.owner_clan_id = (
-            clan.id
-        )  # Define o clã como dono de seu território natal.
+        home_territory.owner_clan_id = clan.id
         clan_map[data["name"]] = {"obj": clan, "home": home_territory}
     db.flush()
 
-    # Cria os personagens iniciais para cada clã.
+    # COMPLETO: Adiciona as relações diplomáticas iniciais entre clãs.
+    print("Forjando alianças e declarando guerras iniciais...")
+    db.add(
+        models.ClanRelationship(
+            clan_a_id=clan_map["Clã Martelo de Ferro"]["obj"].id,
+            clan_b_id=clan_map["Corte de Aetherion"]["obj"].id,
+            relationship_type=ClanRelationshipTypeEnum.WAR,
+        )
+    )
+    db.add(
+        models.ClanRelationship(
+            clan_a_id=clan_map["Legião Dente Afiado"]["obj"].id,
+            clan_b_id=clan_map["Clã Esmaga-Ossos"]["obj"].id,
+            relationship_type=ClanRelationshipTypeEnum.ALLIANCE,
+        )
+    )
+
+    print("Definindo personalidades únicas e dando vida aos personagens...")
     names = [
         "Thorgar",
         "Elara",
@@ -281,47 +280,35 @@ try:
     ]
     for clan_name, data in clan_map.items():
         clan_obj, home_territory = data["obj"], data["home"]
-        num_chars = (
-            12 if clan_name == "Legião Dente Afiado" else 8
-        )  # Dá mais personagens para um clã específico.
+        num_chars = 12 if clan_name == "Legião Dente Afiado" else 8
         for i in range(num_chars):
             char_name = f"{random.choice(names)} {clan_name.split(' ')[-1]}"
             species = species_map[clan_obj.species.name]
+            # ATUALIZADO: Cria o personagem com todos os seus atributos fixos e aleatórios.
             character = models.Character(
                 name=char_name,
                 species_id=species.id,
                 clan_id=clan_obj.id,
                 world_id=world.id,
                 current_health=species.base_health,
-                # Posiciona o personagem aleatoriamente dentro de seu território natal.
                 position_x=random.uniform(home_territory.start_x, home_territory.end_x),
                 position_y=random.uniform(home_territory.start_y, home_territory.end_y),
-                current_state="AGRUPANDO",  # Estado inicial da IA.
+                # Atributos de estado e personalidade
+                fome=random.randint(0, 40),
+                energia=random.randint(80, 100),
+                bravura=random.randint(25, 75),
+                cautela=random.randint(25, 75),
+                sociabilidade=random.randint(25, 75),
+                ganancia=random.randint(25, 75),
+                inteligencia=random.randint(25, 75),
             )
             db.add(character)
-            db.flush()
-            # Adiciona os atributos iniciais, como Fome e o contador para reprodução.
-            db.add(
-                models.CharacterAttribute(
-                    character_id=character.id,
-                    attribute_name="Fome",
-                    attribute_value=random.randint(0, 40),
-                )
-            )
-            db.add(
-                models.CharacterAttribute(
-                    character_id=character.id,
-                    attribute_name="ComidaParaReproducao",
-                    attribute_value=0,
-                )
-            )
+    # REMOVIDO: A criação de CharacterAttribute não é mais necessária.
 
     # --- 4. MISSÕES TEMÁTICAS (NARRATIVA) ---
-    # Esta seção cria os objetivos iniciais para os clãs, dando-lhes um propósito
-    # e impulsionando a narrativa e a jogabilidade emergente.
     print("Atribuindo Missões temáticas para cada Clã...")
+    db.flush()  # Garante que todos os personagens e clãs tenham IDs antes de criar as missões.
 
-    # Missão dos Anões: focada em coleta de recursos industriais.
     mission_dwarf = models.Mission(
         world_id=world.id,
         title="A Grande Forja de Durvak",
@@ -333,7 +320,7 @@ try:
     db.add(
         models.MissionObjective(
             mission_id=mission_dwarf.id,
-            objective_type="GATHER_RESOURCE",
+            objective_type=ObjectiveTypeEnum.GATHER_RESOURCE,
             target_resource_id=resource_map["Minério de Ferro"].id,
             target_quantity=50,
         )
@@ -341,13 +328,12 @@ try:
     db.add(
         models.MissionObjective(
             mission_id=mission_dwarf.id,
-            objective_type="GATHER_RESOURCE",
+            objective_type=ObjectiveTypeEnum.GATHER_RESOURCE,
             target_resource_id=resource_map["Madeira"].id,
             target_quantity=25,
         )
     )
 
-    # Missão dos Humanos: focada em construção e defesa.
     mission_human = models.Mission(
         world_id=world.id,
         title="Erguer a Muralha de Valmor",
@@ -359,7 +345,7 @@ try:
     db.add(
         models.MissionObjective(
             mission_id=mission_human.id,
-            objective_type="GATHER_RESOURCE",
+            objective_type=ObjectiveTypeEnum.GATHER_RESOURCE,
             target_resource_id=resource_map["Madeira"].id,
             target_quantity=100,
         )
@@ -367,13 +353,12 @@ try:
     db.add(
         models.MissionObjective(
             mission_id=mission_human.id,
-            objective_type="GATHER_RESOURCE",
+            objective_type=ObjectiveTypeEnum.GATHER_RESOURCE,
             target_resource_id=resource_map["Pedra"].id,
             target_quantity=80,
         )
     )
 
-    # Missão dos Elfos: focada em conflito e conquista, refletindo sua inimizade com os Anões.
     mission_elf = models.Mission(
         world_id=world.id,
         title="Sabotagem nas Minas",
@@ -385,12 +370,11 @@ try:
     db.add(
         models.MissionObjective(
             mission_id=mission_elf.id,
-            objective_type="CONQUER_TERRITORY",
+            objective_type=ObjectiveTypeEnum.CONQUER_TERRITORY,
             target_territory_id=territory_map["Minas de Durvak"].id,
         )
     )
 
-    # Missão dos Orcs: focada em expansão territorial.
     mission_orc = models.Mission(
         world_id=world.id,
         title="A Grande Caçada",
@@ -402,12 +386,11 @@ try:
     db.add(
         models.MissionObjective(
             mission_id=mission_orc.id,
-            objective_type="CONQUER_TERRITORY",
+            objective_type=ObjectiveTypeEnum.CONQUER_TERRITORY,
             target_territory_id=territory_map["Colinas Rochosas"].id,
         )
     )
 
-    # Missão dos Trolls: focada em combate genérico.
     mission_troll = models.Mission(
         world_id=world.id,
         title="Esmagar os Pequeninos!",
@@ -419,20 +402,16 @@ try:
     db.add(
         models.MissionObjective(
             mission_id=mission_troll.id,
-            objective_type="DEFEAT_CHARACTER",
+            objective_type=ObjectiveTypeEnum.DEFEAT_CHARACTER,
             target_quantity=10,
         )
     )
 
-    # Confirma todas as transações feitas até agora, salvando permanentemente os dados.
     db.commit()
     print("Cenário de Orbis construído com sucesso!")
 
 except Exception as e:
-    # Se qualquer erro ocorrer, imprime a mensagem e desfaz todas as alterações
-    # feitas nesta sessão para manter a integridade do banco de dados.
     print(f"Erro catastrófico durante o seeding: {e}")
     db.rollback()
 finally:
-    # Garante que a conexão com o banco de dados seja fechada ao final do script.
     db.close()
