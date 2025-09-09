@@ -1,8 +1,12 @@
-# Importa 'func' para usar funções SQL como NOW() que são executadas pelo servidor do banco de dados.
+# app/database/models.py
+
+# Importa o módulo 'enum' do Python e renomeia o 'Enum' do SQLAlchemy para evitar conflitos.
+import enum
 from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Enum as EnumSQL,
     Float,
     ForeignKey,
     Integer,
@@ -11,36 +15,47 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from .database import Base  # Base declarativa que nossos modelos herdarão.
+from .database import Base
+
+# -----------------------------------------------------------------------------
+# DEFINIÇÕES DE ENUM PARA INTEGRIDADE DOS DADOS
+# Usar Enums em vez de strings previne erros de digitação e torna o código mais claro.
+# -----------------------------------------------------------------------------
 
 
-# Tabela 9: World (Mundo/Simulação)
+class RelationshipTypeEnum(enum.Enum):
+    ENEMY = "ENEMY"
+    FRIEND = "FRIEND"
+    INDIFFERENT = "INDIFFERENT"
+
+
+class ClanRelationshipTypeEnum(enum.Enum):
+    WAR = "WAR"
+    ALLIANCE = "ALLIANCE"
+    NEUTRAL = "NEUTRAL"
+
+
+class ObjectiveTypeEnum(enum.Enum):
+    GATHER_RESOURCE = "GATHER_RESOURCE"
+    CONQUER_TERRITORY = "CONQUER_TERRITORY"
+    DEFEAT_CHARACTER = "DEFEAT_CHARACTER"  # Adicionado para futuras missões
+
+
+# -----------------------------------------------------------------------------
+# MODELOS DO BANCO DE DADOS
+# -----------------------------------------------------------------------------
+
+
 class World(Base):
-    """
-    Representa a instância principal de uma simulação, o "palco" onde tudo acontece.
-    Contém o estado global e serve como o contêiner para todos os outros elementos.
-    """
-
     __tablename__ = "worlds"
-
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)  # Nome único para cada mundo.
-    map_width = Column(Integer, default=1000)  # Largura do mapa em unidades.
-    map_height = Column(Integer, default=1000)  # Altura do mapa em unidades.
-    current_tick = Column(
-        Integer, default=0
-    )  # O "turno" ou "passo" atual da simulação.
-    current_time_of_day = Column(String, default="DAY")  # Estado do ciclo dia/noite.
-    global_event = Column(
-        String, default="NONE"
-    )  # Evento global ativo que pode afetar a simulação.
-    created_at = Column(
-        DateTime, server_default=func.now()
-    )  # Timestamp de quando o mundo foi criado.
-
-    # Relacionamentos One-to-Many: Um mundo tem muitos clãs, personagens, etc.
-    # 'cascade="all, delete-orphan"' significa que quando um World é deletado,
-    # todos os seus clãs, personagens, etc., associados também são deletados.
+    name = Column(String, unique=True, index=True)
+    map_width = Column(Integer, default=1000)
+    map_height = Column(Integer, default=1000)
+    current_tick = Column(Integer, default=0)
+    current_time_of_day = Column(String, default="DAY")
+    global_event = Column(String, default="NONE")
+    created_at = Column(DateTime, server_default=func.now())
     clans = relationship("Clan", back_populates="world", cascade="all, delete-orphan")
     characters = relationship(
         "Character", back_populates="world", cascade="all, delete-orphan"
@@ -56,26 +71,13 @@ class World(Base):
     )
 
 
-# Tabela 1: Species (Espécies)
 class Species(Base):
-    """
-    Define um "template" ou "blueprint" para os personagens (ex: Humano, Orc, Elfo).
-    Contém os atributos base que todos os membros de uma espécie compartilham.
-    """
-
     __tablename__ = "species"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
-    base_health = Column(Integer, nullable=False)  # Pontos de vida iniciais.
-    base_strength = Column(Integer, nullable=False)  # Força de ataque base.
-
-    # Relacionamentos
+    base_health = Column(Integer, nullable=False)
+    base_strength = Column(Integer, nullable=False)
     characters = relationship("Character", back_populates="species")
-
-    # Relacionamentos de uma espécie com outras. Como uma espécie pode estar em
-    # qualquer um dos lados da relação, precisamos de dois 'relationships' para
-    # capturar todos os casos e evitar ambiguidades no SQLAlchemy.
     relationships_as_a = relationship(
         "SpeciesRelationship",
         foreign_keys="[SpeciesRelationship.species_a_id]",
@@ -88,31 +90,15 @@ class Species(Base):
     )
 
 
-# Tabela 2: Clans (Clãs)
 class Clan(Base):
-    """
-    Representa uma facção, tribo ou grupo social de personagens.
-    """
-
     __tablename__ = "clans"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
-    species_id = Column(
-        Integer, ForeignKey("species.id"), nullable=False, index=True
-    )  # Espécie dominante do clã.
-    world_id = Column(
-        Integer, ForeignKey("worlds.id"), nullable=False, index=True
-    )  # Mundo ao qual o clã pertence.
-
-    # Relacionamentos Many-to-One
+    species_id = Column(Integer, ForeignKey("species.id"), nullable=False, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     world = relationship("World", back_populates="clans")
     species = relationship("Species")
-
-    # Relacionamento One-to-Many
     characters = relationship("Character", back_populates="clan")
-
-    # Semelhante a Species, define as relações diplomáticas com outros clãs.
     relationships_as_a = relationship(
         "ClanRelationship",
         foreign_keys="[ClanRelationship.clan_a_id]",
@@ -125,38 +111,28 @@ class Clan(Base):
     )
 
 
-# Tabela 3: Characters (Personagens)
 class Character(Base):
-    """
-    A principal entidade "agente" da simulação. Um indivíduo que age no mundo.
-    """
-
     __tablename__ = "characters"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     species_id = Column(Integer, ForeignKey("species.id"), nullable=False, index=True)
-    clan_id = Column(
-        Integer, ForeignKey("clans.id"), nullable=True, index=True
-    )  # Pode não ter um clã.
+    clan_id = Column(Integer, ForeignKey("clans.id"), nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
-    current_health = Column(Integer, nullable=False)  # Vida atual.
+    current_health = Column(Integer, nullable=False)
     position_x = Column(Float, default=0.0)
     position_y = Column(Float, default=0.0)
-    current_state = Column(
-        String, default="VAGANDO"
-    )  # Estado atual da IA (ex: ATACANDO, FUGINDO).
-    target_character_id = Column(
-        Integer, ForeignKey("characters.id"), nullable=True
-    )  # Alvo atual (auto-referência).
-
-    # Relacionamentos
+    fome = Column(Integer, default=0, nullable=False)
+    energia = Column(Integer, default=100, nullable=False)
+    idade = Column(Integer, default=0, nullable=False)
+    reproduction_progress = Column(Integer, default=0, nullable=False)
+    bravura = Column(Integer, default=50, nullable=False)
+    cautela = Column(Integer, default=50, nullable=False)
+    sociabilidade = Column(Integer, default=50, nullable=False)
+    ganancia = Column(Integer, default=50, nullable=False)
+    inteligencia = Column(Integer, default=50, nullable=False)
     world = relationship("World", back_populates="characters")
     species = relationship("Species", back_populates="characters")
     clan = relationship("Clan", back_populates="characters")
-    attributes = relationship(
-        "CharacterAttribute", back_populates="character", cascade="all, delete-orphan"
-    )
     inventory = relationship(
         "CharacterInventory", back_populates="character", cascade="all, delete-orphan"
     )
@@ -172,22 +148,13 @@ class Character(Base):
     )
 
 
-# Tabela 4: SpeciesRelationships (Tabela de Junção)
 class SpeciesRelationship(Base):
-    """
-    Define a relação padrão (inata) entre duas espécies. (Ex: Predador/Presa, Amigável).
-    """
-
     __tablename__ = "species_relationships"
-
     id = Column(Integer, primary_key=True, index=True)
     species_a_id = Column(Integer, ForeignKey("species.id"), nullable=False)
     species_b_id = Column(Integer, ForeignKey("species.id"), nullable=False)
-    relationship_type = Column(
-        String, nullable=False
-    )  # Ex: "ENEMY", "FRIEND", "INDIFFERENT"
-
-    # Links de volta para os objetos Species
+    # ATUALIZADO: Usando Enum para garantir a integridade dos dados.
+    relationship_type = Column(EnumSQL(RelationshipTypeEnum), nullable=False)
     species_a = relationship(
         "Species", foreign_keys=[species_a_id], back_populates="relationships_as_a"
     )
@@ -196,22 +163,13 @@ class SpeciesRelationship(Base):
     )
 
 
-# Tabela 5: ClanRelationships (Tabela de Junção)
 class ClanRelationship(Base):
-    """
-    Define a relação diplomática entre dois clãs (Ex: Guerra, Aliança).
-    Esta relação sobrepõe a relação de espécie.
-    """
-
     __tablename__ = "clan_relationships"
-
     id = Column(Integer, primary_key=True, index=True)
     clan_a_id = Column(Integer, ForeignKey("clans.id"), nullable=False)
     clan_b_id = Column(Integer, ForeignKey("clans.id"), nullable=False)
-    relationship_type = Column(
-        String, nullable=False
-    )  # Ex: "WAR", "ALLIANCE", "NEUTRAL"
-
+    # ATUALIZADO: Usando Enum para garantir a integridade dos dados.
+    relationship_type = Column(EnumSQL(ClanRelationshipTypeEnum), nullable=False)
     clan_a = relationship(
         "Clan", foreign_keys=[clan_a_id], back_populates="relationships_as_a"
     )
@@ -220,41 +178,22 @@ class ClanRelationship(Base):
     )
 
 
-# Tabela 6: EventsLog
 class EventLog(Base):
-    """
-    Registra eventos significativos que ocorrem na simulação, formando a "história" do mundo.
-    """
-
     __tablename__ = "events_log"
-
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
-    timestamp = Column(DateTime, server_default=func.now())  # Quando o evento ocorreu.
-    event_type = Column(String, nullable=False)  # Ex: "MORTE", "NASCIMENTO", "ATAQUE".
-    description = Column(Text)  # Descrição legível do evento.
-
-    # IDs opcionais para dar contexto ao evento.
-    primary_char_id = Column(
-        Integer, ForeignKey("characters.id"), nullable=True
-    )  # Personagem principal do evento.
-    secondary_char_id = Column(
-        Integer, ForeignKey("characters.id"), nullable=True
-    )  # Personagem secundário.
+    timestamp = Column(DateTime, server_default=func.now())
+    event_type = Column(String, nullable=False)
+    description = Column(Text)
+    primary_char_id = Column(Integer, ForeignKey("characters.id"), nullable=True)
+    secondary_char_id = Column(Integer, ForeignKey("characters.id"), nullable=True)
     clan_a_id = Column(Integer, ForeignKey("clans.id"), nullable=True)
     clan_b_id = Column(Integer, ForeignKey("clans.id"), nullable=True)
-
     world = relationship("World", back_populates="events")
 
 
-# Tabela 7: CharacterRelationships (Tabela de Junção)
 class CharacterRelationship(Base):
-    """
-    Define uma relação pessoal entre dois personagens específicos, que evolui com interações.
-    """
-
     __tablename__ = "character_relationships"
-
     id = Column(Integer, primary_key=True, index=True)
     character_a_id = Column(
         Integer, ForeignKey("characters.id"), nullable=False, index=True
@@ -262,13 +201,8 @@ class CharacterRelationship(Base):
     character_b_id = Column(
         Integer, ForeignKey("characters.id"), nullable=False, index=True
     )
-    relationship_score = Column(
-        Float, default=0.0
-    )  # Pontuação que mede a relação (ex: -100 a 100).
-    last_interaction = Column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )  # Atualiza a cada interação.
-
+    relationship_score = Column(Float, default=0.0)
+    last_interaction = Column(DateTime, server_default=func.now(), onupdate=func.now())
     character_a = relationship(
         "Character", foreign_keys=[character_a_id], back_populates="relationships_as_a"
     )
@@ -277,45 +211,16 @@ class CharacterRelationship(Base):
     )
 
 
-# Tabela 8: CharacterAttributes
-class CharacterAttribute(Base):
-    """
-    Armazena atributos dinâmicos de um personagem (Ex: "Fome", "Energia") no formato chave-valor.
-    """
-
-    __tablename__ = "character_attributes"
-
-    id = Column(Integer, primary_key=True, index=True)
-    character_id = Column(
-        Integer, ForeignKey("characters.id"), nullable=False, index=True
-    )
-    attribute_name = Column(String, nullable=False)  # Ex: "Fome".
-    attribute_value = Column(Integer, default=0)  # Valor do atributo.
-    character = relationship("Character", back_populates="attributes")
-
-
-# Tabela 10: ResourceTypes
 class ResourceType(Base):
-    """
-    Define um "template" para um tipo de recurso (Ex: Madeira, Pedra, Fruta).
-    """
-
     __tablename__ = "resource_types"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, nullable=False)
-    category = Column(String, nullable=False)  # Ex: "COMIDA", "MATERIAL_CONSTRUCAO".
-    base_value = Column(Integer, default=1)  # Valor para comércio ou pontuação.
+    category = Column(String, nullable=False)
+    base_value = Column(Integer, default=1)
 
 
-# Tabela 11: CharacterInventory
 class CharacterInventory(Base):
-    """
-    Tabela de junção que representa o inventário de um personagem.
-    """
-
     __tablename__ = "character_inventory"
-
     id = Column(Integer, primary_key=True, index=True)
     character_id = Column(
         Integer, ForeignKey("characters.id"), nullable=False, index=True
@@ -328,26 +233,16 @@ class CharacterInventory(Base):
     resource_type = relationship("ResourceType")
 
 
-# Tabela 12: Territories
 class Territory(Base):
-    """
-    Define uma área geográfica nomeada no mapa, que pode ser controlada por clãs.
-    """
-
     __tablename__ = "territories"
-
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     name = Column(String, nullable=False)
-    owner_clan_id = Column(
-        Integer, ForeignKey("clans.id"), nullable=True, index=True
-    )  # Clã que controla o território.
-    # Coordenadas que definem a área retangular do território.
+    owner_clan_id = Column(Integer, ForeignKey("clans.id"), nullable=True, index=True)
     start_x = Column(Float, nullable=False)
     end_x = Column(Float, nullable=False)
     start_y = Column(Float, nullable=False)
     end_y = Column(Float, nullable=False)
-
     world = relationship("World", back_populates="territories")
     owner_clan = relationship("Clan")
     resource_nodes = relationship(
@@ -355,14 +250,8 @@ class Territory(Base):
     )
 
 
-# Tabela 13: ResourceNode
 class ResourceNode(Base):
-    """
-    Representa uma instância física e coletável de um recurso no mapa (ex: uma árvore, uma mina).
-    """
-
     __tablename__ = "resource_nodes"
-
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     resource_type_id = Column(
@@ -371,35 +260,23 @@ class ResourceNode(Base):
     territory_id = Column(Integer, ForeignKey("territories.id"), nullable=True)
     position_x = Column(Float, nullable=False)
     position_y = Column(Float, nullable=False)
-    quantity = Column(
-        Integer, default=10
-    )  # Quantidade de recurso que pode ser coletada antes de esgotar.
-    is_depleted = Column(
-        Boolean, default=False
-    )  # Flag que indica se o nó foi esgotado.
-
+    quantity = Column(Integer, default=10)
+    is_depleted = Column(Boolean, default=False)
     world = relationship("World")
     resource_type = relationship("ResourceType")
     territory = relationship("Territory", back_populates="resource_nodes")
 
 
-# Tabela 14: Missions
 class Mission(Base):
-    """
-    Define uma missão ou objetivo de alto nível para um clã.
-    """
-
     __tablename__ = "missions"
-
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     title = Column(String, nullable=False)
     assignee_clan_id = Column(
         Integer, ForeignKey("clans.id"), nullable=True, index=True
-    )  # Clã que recebeu a missão.
-    status = Column(String, default="ATIVA")  # Ex: "ATIVA", "CONCLUÍDA", "FALHOU".
+    )
+    status = Column(String, default="ATIVA")
     created_at = Column(DateTime, server_default=func.now())
-
     world = relationship("World", back_populates="missions")
     assignee_clan = relationship("Clan")
     objectives = relationship(
@@ -407,24 +284,14 @@ class Mission(Base):
     )
 
 
-# Tabela 15: MissionObjectives
 class MissionObjective(Base):
-    """
-    Define uma tarefa ou passo específico que precisa ser completado para uma missão.
-    """
-
     __tablename__ = "mission_objectives"
-
     id = Column(Integer, primary_key=True, index=True)
     mission_id = Column(Integer, ForeignKey("missions.id"), nullable=False, index=True)
-    objective_type = Column(
-        String, nullable=False
-    )  # Ex: "GATHER_RESOURCE", "CONQUER_TERRITORY".
-
-    # Apenas um dos campos 'target' será preenchido, dependendo do 'objective_type'.
+    # ATUALIZADO: Usando Enum para garantir a integridade dos dados.
+    objective_type = Column(EnumSQL(ObjectiveTypeEnum), nullable=False)
     target_resource_id = Column(Integer, ForeignKey("resource_types.id"), nullable=True)
     target_territory_id = Column(Integer, ForeignKey("territories.id"), nullable=True)
     target_quantity = Column(Integer, default=1)
-
     is_complete = Column(Boolean, default=False)
     mission = relationship("Mission", back_populates="objectives")
