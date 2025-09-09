@@ -368,6 +368,7 @@ class ResourceNode(Base):
     resource_type_id = Column(
         Integer, ForeignKey("resource_types.id"), nullable=False, index=True
     )
+    territory_id = Column(Integer, ForeignKey("territories.id"), nullable=True)
     position_x = Column(Float, nullable=False)
     position_y = Column(Float, nullable=False)
     quantity = Column(
@@ -379,6 +380,7 @@ class ResourceNode(Base):
 
     world = relationship("World")
     resource_type = relationship("ResourceType")
+    territory = relationship("Territory", back_populates="resource_nodes")
 
 
 # Tabela 14: Missions
