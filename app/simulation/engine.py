@@ -1,5 +1,3 @@
-# app/simulation/engine.py
-
 import math
 import random
 from collections import defaultdict
@@ -7,22 +5,17 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 from ..database import models
 
-
-# --- Constantes (sem alterações) ---
 VISION_RANGE = 100.0
 MOVE_SPEED = 5.0
 ATTACK_RANGE = 10.0
 GATHER_RANGE = 15.0
 GROUPING_DISTANCE = 50.0
-HUNGER_INCREASE_RATE = 0.5  # A fome aumenta em 0.5 por tick
+HUNGER_INCREASE_RATE = 0.5
 STARVATION_DAMAGE = 2
-ENERGY_REGEN_RATE = 1  # Regenera 1 de energia por tick se seguro
+ENERGY_REGEN_RATE = 1
 REPRODUCTION_FOOD_COST = 100
 
-# --- Funções Auxiliares e de IA (com pequenas atualizações) ---
 
-
-# ... (A maioria das funções auxiliares como get_effective_relationship, find_nearest_character, etc. não mudam) ...
 def get_effective_relationship(
     char1: models.Character,
     char2: models.Character,
@@ -190,7 +183,6 @@ def move_away_from_target(
     ), max(0, min(world.map_height, new_y))
 
 
-# ATUALIZADO: Função simplificada, não precisa mais do attrs_map.
 def consume_food_from_inventory(
     character: models.Character, inventory_map: dict, food_resource_type_ids: set
 ) -> tuple[bool, models.CharacterInventory | None]:
@@ -218,7 +210,6 @@ def process_wandering_state(character: models.Character, world: models.World):
     character.position_y = max(0, min(world.map_height, character.position_y + new_dy))
 
 
-# ... (get_clan_goal_position e check_and_update_mission_progress não mudam) ...
 def get_clan_goal_position(db: Session, clan_id: int):
     if not clan_id:
         return None
@@ -289,7 +280,6 @@ def check_and_update_mission_progress(db: Session, world_id: int):
             mission.status = "CONCLUÍDA"
 
 
-# --- Motor Principal da Simulação (TOTALMENTE ATUALIZADO) ---
 def process_tick(db: Session, world_id: int):
     from .behavior_tree import build_character_ai_tree
 
@@ -297,7 +287,6 @@ def process_tick(db: Session, world_id: int):
     if not world:
         return
 
-    # [OTIMIZAÇÃO] 1. CARREGAMENTO EM LOTE
     all_characters = (
         db.query(models.Character)
         .filter_by(world_id=world_id)
@@ -307,8 +296,6 @@ def process_tick(db: Session, world_id: int):
         .all()
     )
     character_ids = [c.id for c in all_characters]
-
-    # REMOVIDO: Carregamento de 'character_attributes' não é mais necessário.
 
     all_inventory = (
         db.query(models.CharacterInventory)
@@ -352,7 +339,6 @@ def process_tick(db: Session, world_id: int):
             char1, char2, zombie_species_id, clan_rels, species_rels
         )
 
-    # ATUALIZADO: world_state não contém mais o 'attrs_map'
     world_state = {
         "world": world,
         "all_characters": all_characters,
@@ -372,12 +358,10 @@ def process_tick(db: Session, world_id: int):
     ai_tree = build_character_ai_tree()
     world.current_tick += 1
 
-    # 2. PROCESSAMENTO EM MEMÓRIA
     for char in all_characters:
         if char.id in commands["characters_to_delete_ids"]:
             continue
 
-        # --- ATUALIZAÇÃO DE ESTADO PASSIVO (Fome, Idade, Energia) ---
         char.idade += 1
         char.fome = int(min(100, char.fome + HUNGER_INCREASE_RATE))
 
@@ -397,17 +381,13 @@ def process_tick(db: Session, world_id: int):
 
         blackboard = {}
 
-        # A IA decide a ação e consome energia.
         ai_tree.tick(char, world_state, blackboard, commands)
 
-        # Regeneração passiva de energia se o personagem estiver seguro.
         if not blackboard.get("enemies_in_range"):
             char.energia = min(100, char.energia + ENERGY_REGEN_RATE)
 
-        # Garante que a energia não fique abaixo de zero.
         char.energia = max(0, char.energia)
 
-    # [OTIMIZAÇÃO] 3. ESCRITA EM LOTE (BATCH WRITING)
     try:
         if commands["objects_to_add"]:
             db.add_all(commands["objects_to_add"])

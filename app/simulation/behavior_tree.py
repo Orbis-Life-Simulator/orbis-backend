@@ -1,5 +1,3 @@
-# app/simulation/behavior_tree.py
-
 from enum import Enum
 from ..database import models
 from .engine import (
@@ -15,10 +13,6 @@ from .engine import (
     consume_food_from_inventory,
     get_territory_at_position,
 )
-
-# -----------------------------------------------------------------------------
-# 1. CLASSES BASE (Sem alterações na estrutura)
-# -----------------------------------------------------------------------------
 
 
 class NodeStatus(Enum):
@@ -117,10 +111,6 @@ class UtilitySelector(Node):
         return self.default_behavior.tick(character, world_state, blackboard, commands)
 
 
-# -----------------------------------------------------------------------------
-# 2. NÓS DE CONDIÇÃO E AÇÃO (Com uma nova ação: Rest)
-# -----------------------------------------------------------------------------
-# (Classes como HasFoodInInventory, Flee, Attack, etc. omitidas para brevidade, elas não mudam)
 class IsEnemyNear(Node):
     def tick(self, character, world_state, blackboard, commands):
         if blackboard.get("enemies_in_range"):
@@ -133,7 +123,6 @@ class IsEnemyNear(Node):
         return NodeStatus.FAILURE
 
 
-# ... Outros nós de ação e condição permanecem os mesmos ...
 class HasFoodInInventory(Node):
     def tick(self, character, world_state, blackboard, commands):
         char_inventory = world_state["inventory_map"].get(character.id, {})
@@ -182,7 +171,7 @@ class Attack(Node):
                     )
                 )
             return NodeStatus.SUCCESS
-        character.energia -= 1  # ATUALIZADO: Mover-se para o combate consome energia
+        character.energia -= 1
         return NodeStatus.RUNNING
 
 
@@ -240,17 +229,17 @@ class MoveToAndGatherResource(Node):
                 ] = new_item
                 commands["objects_to_add"].append(new_item)
             target_node.quantity -= 1
-            character.energia -= 3  # ATUALIZADO: Coletar consome energia
+            character.energia -= 3
             if target_node.quantity <= 0:
                 target_node.is_depleted = True
             return NodeStatus.SUCCESS
-        character.energia -= 1  # ATUALIZADO: Mover-se consome energia
+        character.energia -= 1
         return NodeStatus.RUNNING
 
 
 class GroupOrFollowObjective(Node):
     def tick(self, character, world_state, blackboard, commands):
-        character.energia -= 1  # ATUALIZADO: Mover-se consome energia
+        character.energia -= 1
         clan_goal = world_state["clan_goals"].get(character.clan_id)
         if clan_goal:
             move_towards_position(
@@ -278,24 +267,17 @@ class GroupOrFollowObjective(Node):
 
 class Wander(Node):
     def tick(self, character, world_state, blackboard, commands):
-        character.energia -= 1  # ATUALIZADO: Vagar consome energia
+        character.energia -= 1
         process_wandering_state(character, world_state["world"])
         return NodeStatus.SUCCESS
 
 
-# NOVO NÓ DE AÇÃO
 class Rest(Node):
     """Ação de descansar. O personagem simplesmente para. A regeneração de energia
     será tratada no loop principal do engine.py."""
 
     def tick(self, character, world_state, blackboard, commands):
-        # A "ação" de descansar é não fazer nada.
         return NodeStatus.SUCCESS
-
-
-# -----------------------------------------------------------------------------
-# 3. CONSIDERAÇÕES DE UTILIDADE (ATUALIZADAS PARA ACESSO DIRETO)
-# -----------------------------------------------------------------------------
 
 
 class FleeConsideration(Consideration):
@@ -313,7 +295,7 @@ class AttackConsideration(Consideration):
     def calculate_utility(self, character, world_state, blackboard):
         enemies_in_range = blackboard["enemies_in_range"]
         if not enemies_in_range or character.energia < 10:
-            return 0.0  # Não ataca se estiver exausto
+            return 0.0
         target = min(
             enemies_in_range,
             key=lambda e: (e.position_x - character.position_x) ** 2
@@ -326,9 +308,7 @@ class AttackConsideration(Consideration):
         advantage = blackboard["numerical_advantage"]
         numerical_modifier = 1.0 + (advantage * 0.3)
         bravery_modifier = 0.75 + ((character.bravura / 100.0) * 0.5)
-        intelligence_modifier = 0.8 + (
-            (character.inteligencia / 100.0) * 0.4
-        )  # Bônus tático da inteligência
+        intelligence_modifier = 0.8 + ((character.inteligencia / 100.0) * 0.4)
 
         base_attack_desire = 60.0
         final_score = (
@@ -368,22 +348,15 @@ class GroupConsideration(Consideration):
         return 15.0 * (character.sociabilidade / 50.0)
 
 
-# NOVA CONSIDERAÇÃO
 class RestConsideration(Consideration):
     def calculate_utility(self, character, world_state, blackboard):
-        # A vontade de descansar é zero se houver inimigos por perto. A segurança é prioridade.
+
         if blackboard["enemies_in_range"]:
             return 0.0
 
-        # A utilidade é inversamente proporcional à energia.
         energy_percentage = character.energia / 100.0
-        score = (1.0 - energy_percentage) * 80  # Prioridade moderadamente alta
+        score = (1.0 - energy_percentage) * 80
         return score
-
-
-# -----------------------------------------------------------------------------
-# 4. CONSTRUÇÃO DA ÁRVORE PRINCIPAL DA IA (Com a nova opção de Descansar)
-# -----------------------------------------------------------------------------
 
 
 def build_character_ai_tree():
@@ -397,14 +370,14 @@ def build_character_ai_tree():
         ]
     )
     group_behavior = GroupOrFollowObjective()
-    rest_behavior = Rest()  # O comportamento de descanso é a ação simples 'Rest'
+    rest_behavior = Rest()
     wander_behavior = Wander()
 
     considerations = [
         FleeConsideration(flee_behavior),
         AttackConsideration(combat_behavior),
         EatConsideration(eat_behavior),
-        RestConsideration(rest_behavior),  # Nova opção para a IA
+        RestConsideration(rest_behavior),
         GroupConsideration(group_behavior),
     ]
 
