@@ -22,9 +22,19 @@ def get_effective_relationship(
     zombie_species_id: int | None,
     clan_rels: dict,
     species_rels: dict,
+    personal_rels: dict,
 ) -> str:
     if char1.id == char2.id:
         return "FRIEND"
+
+    personal_rel_key = tuple(sorted((char1.id, char2.id)))
+    personal_relationship = personal_rels.get(personal_rel_key)
+    if personal_relationship:
+        if personal_relationship.relationship_score > 50:
+            return "FRIEND"
+        if personal_relationship.relationship_score < -50:
+            return "ENEMY"
+
     if zombie_species_id:
         if (char1.species_id == zombie_species_id) and (
             char2.species_id == zombie_species_id
@@ -34,19 +44,22 @@ def get_effective_relationship(
             char2.species_id == zombie_species_id
         ):
             return "ENEMY"
+
     if char1.clan_id and char2.clan_id:
         if char1.clan_id == char2.clan_id:
             return "FRIEND"
-        rel_key = tuple(sorted((char1.clan_id, char2.clan_id)))
-        clan_rel_type = clan_rels.get(rel_key)
+        clan_rel_key = tuple(sorted((char1.clan_id, char2.clan_id)))
+        clan_rel_type = clan_rels.get(clan_rel_key)
         if clan_rel_type == "WAR":
             return "ENEMY"
         if clan_rel_type == "ALLIANCE":
             return "FRIEND"
-    rel_key = tuple(sorted((char1.species_id, char2.species_id)))
-    species_rel_type = species_rels.get(rel_key)
+
+    species_rel_key = tuple(sorted((char1.species_id, char2.species_id)))
+    species_rel_type = species_rels.get(species_rel_key)
     if species_rel_type:
         return species_rel_type
+
     return "INDIFFERENT"
 
 
@@ -280,11 +293,61 @@ def check_and_update_mission_progress(db: Session, world_id: int):
             mission.status = "CONCLUÍDA"
 
 
+def log_event(
+    commands: dict,
+    world_id: int,
+    event_type: str,
+    character: models.Character,
+    description: str,
+    secondary_char: models.Character = None,
+):
+    """Cria e adiciona um novo EventLog à fila de comandos."""
+    new_log = models.EventLog(
+        world_id=world_id,
+        event_type=event_type,
+        description=description,
+        primary_char_id=character.id,
+        secondary_char_id=secondary_char.id if secondary_char else None,
+        clan_a_id=character.clan_id,
+        clan_b_id=secondary_char.clan_id if secondary_char else None,
+    )
+    commands["objects_to_add"].append(new_log)
+
+
+def update_relationship_score(
+    db: Session,
+    char_a_id: int,
+    char_b_id: int,
+    score_change: float,
+    personal_rels_map: dict,
+):
+    if char_a_id == char_b_id:
+        return
+
+    rel_key = tuple(sorted((char_a_id, char_b_id)))
+
+    relationship = personal_rels_map.get(rel_key)
+
+    if relationship:
+        relationship.relationship_score = max(
+            -100.0, min(100.0, relationship.relationship_score + score_change)
+        )
+    else:
+        new_relationship = models.CharacterRelationship(
+            character_a_id=rel_key[0],
+            character_b_id=rel_key[1],
+            relationship_score=max(-100.0, min(100.0, score_change)),
+        )
+        personal_rels_map[rel_key] = new_relationship
+        db.add(new_relationship)
+
+
 def process_tick(db: Session, world_id: int):
     from .behavior_tree import build_character_ai_tree
 
     world = db.query(models.World).get(world_id)
     if not world:
+        print(f"Mundo com ID {world_id} não encontrado.")
         return
 
     all_characters = (
@@ -295,6 +358,9 @@ def process_tick(db: Session, world_id: int):
         )
         .all()
     )
+    if not all_characters:
+        return
+
     character_ids = [c.id for c in all_characters]
 
     all_inventory = (
@@ -313,6 +379,7 @@ def process_tick(db: Session, world_id: int):
         .all()
     )
     all_territories = db.query(models.Territory).filter_by(world_id=world_id).all()
+
     clan_rels_query = db.query(models.ClanRelationship).all()
     clan_rels = {
         tuple(sorted((r.clan_a_id, r.clan_b_id))): r.relationship_type
@@ -323,12 +390,28 @@ def process_tick(db: Session, world_id: int):
         tuple(sorted((r.species_a_id, r.species_b_id))): r.relationship_type
         for r in species_rels_query
     }
+    personal_rels_query = (
+        db.query(models.CharacterRelationship)
+        .join(
+            models.Character,
+            models.CharacterRelationship.character_a_id == models.Character.id,
+        )
+        .filter(models.Character.world_id == world_id)
+        .all()
+    )
+    personal_rels = {
+        tuple(sorted((r.character_a_id, r.character_b_id))): r
+        for r in personal_rels_query
+    }
+
     zombie_species = db.query(models.Species).filter_by(name="Zumbi").first()
     zombie_species_id = zombie_species.id if zombie_species else None
+
     food_resource_types = (
         db.query(models.ResourceType).filter_by(category="COMIDA").all()
     )
     food_resource_type_ids = {rt.id for rt in food_resource_types}
+
     clan_goals = {
         clan.id: get_clan_goal_position(db, clan.id)
         for clan in db.query(models.Clan).filter_by(world_id=world_id).all()
@@ -336,7 +419,7 @@ def process_tick(db: Session, world_id: int):
 
     def get_rel(char1, char2):
         return get_effective_relationship(
-            char1, char2, zombie_species_id, clan_rels, species_rels
+            char1, char2, zombie_species_id, clan_rels, species_rels, personal_rels
         )
 
     world_state = {
@@ -348,13 +431,17 @@ def process_tick(db: Session, world_id: int):
         "food_resource_type_ids": food_resource_type_ids,
         "clan_goals": clan_goals,
         "get_rel": get_rel,
+        "log_event_func": log_event,
+        "personal_rels_map": personal_rels,
     }
 
     commands = {
         "objects_to_add": [],
         "objects_to_delete": [],
         "characters_to_delete_ids": set(),
+        "rels_to_update": [],
     }
+
     ai_tree = build_character_ai_tree()
     world.current_tick += 1
 
@@ -364,17 +451,15 @@ def process_tick(db: Session, world_id: int):
 
         char.idade += 1
         char.fome = int(min(100, char.fome + HUNGER_INCREASE_RATE))
-
         if char.fome >= 100:
             char.current_health -= STARVATION_DAMAGE
             if char.current_health <= 0:
-                commands["objects_to_add"].append(
-                    models.EventLog(
-                        world_id=world.id,
-                        event_type="MORTE_FOME",
-                        description=f"'{char.name}' morreu de fome.",
-                        primary_char_id=char.id,
-                    )
+                log_event(
+                    commands,
+                    world.id,
+                    "MORTE_FOME",
+                    char,
+                    f"'{char.name}' morreu de fome.",
                 )
                 commands["characters_to_delete_ids"].add(char.id)
                 continue
@@ -385,20 +470,28 @@ def process_tick(db: Session, world_id: int):
 
         if not blackboard.get("enemies_in_range"):
             char.energia = min(100, char.energia + ENERGY_REGEN_RATE)
-
         char.energia = max(0, char.energia)
 
     try:
+        for char_a_id, char_b_id, score_change in commands["rels_to_update"]:
+            update_relationship_score(
+                db, char_a_id, char_b_id, score_change, personal_rels
+            )
+
         if commands["objects_to_add"]:
             db.add_all(commands["objects_to_add"])
+
         for obj in commands["objects_to_delete"]:
             if db.object_session(obj):
                 db.delete(obj)
+
         if commands["characters_to_delete_ids"]:
             db.query(models.Character).filter(
                 models.Character.id.in_(commands["characters_to_delete_ids"])
             ).delete(synchronize_session=False)
+
         check_and_update_mission_progress(db, world_id)
+
         db.commit()
     except Exception as e:
         db.rollback()
