@@ -12,6 +12,7 @@ from .routes import (
     relationships,
     game_elements,
     missions,
+    storyteller,
 )
 
 from .simulation.connection_manager import manager
@@ -46,6 +47,7 @@ app.include_router(events.router)
 app.include_router(relationships.router)
 app.include_router(game_elements.router)
 app.include_router(missions.router)
+app.include_router(storyteller.router)
 
 
 @app.get("/", tags=["Root"])
