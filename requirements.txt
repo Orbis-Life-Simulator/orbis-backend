@@ -6,3 +6,5 @@ alembic
 databases
 python-dotenv
 websockets
+google-generativeai
+python-dotenv
