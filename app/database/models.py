@@ -1,6 +1,3 @@
-# app/database/models.py
-
-# Importa o módulo 'enum' do Python e renomeia o 'Enum' do SQLAlchemy para evitar conflitos.
 import enum
 from sqlalchemy import (
     Boolean,
@@ -16,11 +13,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
-
-# -----------------------------------------------------------------------------
-# DEFINIÇÕES DE ENUM PARA INTEGRIDADE DOS DADOS
-# Usar Enums em vez de strings previne erros de digitação e torna o código mais claro.
-# -----------------------------------------------------------------------------
 
 
 class RelationshipTypeEnum(enum.Enum):
@@ -38,12 +30,7 @@ class ClanRelationshipTypeEnum(enum.Enum):
 class ObjectiveTypeEnum(enum.Enum):
     GATHER_RESOURCE = "GATHER_RESOURCE"
     CONQUER_TERRITORY = "CONQUER_TERRITORY"
-    DEFEAT_CHARACTER = "DEFEAT_CHARACTER"  # Adicionado para futuras missões
-
-
-# -----------------------------------------------------------------------------
-# MODELOS DO BANCO DE DADOS
-# -----------------------------------------------------------------------------
+    DEFEAT_CHARACTER = "DEFEAT_CHARACTER"
 
 
 class World(Base):
@@ -153,7 +140,7 @@ class SpeciesRelationship(Base):
     id = Column(Integer, primary_key=True, index=True)
     species_a_id = Column(Integer, ForeignKey("species.id"), nullable=False)
     species_b_id = Column(Integer, ForeignKey("species.id"), nullable=False)
-    # ATUALIZADO: Usando Enum para garantir a integridade dos dados.
+
     relationship_type = Column(EnumSQL(RelationshipTypeEnum), nullable=False)
     species_a = relationship(
         "Species", foreign_keys=[species_a_id], back_populates="relationships_as_a"
@@ -168,7 +155,7 @@ class ClanRelationship(Base):
     id = Column(Integer, primary_key=True, index=True)
     clan_a_id = Column(Integer, ForeignKey("clans.id"), nullable=False)
     clan_b_id = Column(Integer, ForeignKey("clans.id"), nullable=False)
-    # ATUALIZADO: Usando Enum para garantir a integridade dos dados.
+
     relationship_type = Column(EnumSQL(ClanRelationshipTypeEnum), nullable=False)
     clan_a = relationship(
         "Clan", foreign_keys=[clan_a_id], back_populates="relationships_as_a"
@@ -288,7 +275,6 @@ class MissionObjective(Base):
     __tablename__ = "mission_objectives"
     id = Column(Integer, primary_key=True, index=True)
     mission_id = Column(Integer, ForeignKey("missions.id"), nullable=False, index=True)
-    # ATUALIZADO: Usando Enum para garantir a integridade dos dados.
     objective_type = Column(EnumSQL(ObjectiveTypeEnum), nullable=False)
     target_resource_id = Column(Integer, ForeignKey("resource_types.id"), nullable=True)
     target_territory_id = Column(Integer, ForeignKey("territories.id"), nullable=True)
