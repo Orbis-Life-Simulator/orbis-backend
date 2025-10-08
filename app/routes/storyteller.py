@@ -20,7 +20,14 @@ class DivineDecreeRequest(BaseModel):
 def execute_divine_decree(
     world_id: int, request: DivineDecreeRequest, db: Session = Depends(get_db)
 ):
-    comando_ia = interpretar_decreto(request.decreto)
+    world = db.query(models.World).filter(models.World.id == world_id).first()
+    if not world:
+        raise HTTPException(status_code=404, detail="Mundo não encontrado.")
+
+    contexto_para_ia = f"Evento global atual: {world.global_event or 'Nenhum'}."
+    print(f"Contexto enviado para a IA: {contexto_para_ia}")
+
+    comando_ia = interpretar_decreto(request.decreto, contexto_para_ia)
 
     if not comando_ia:
         raise HTTPException(
@@ -31,7 +38,19 @@ def execute_divine_decree(
     nome_funcao = comando_ia["name"]
     argumentos = comando_ia["args"]
 
-    if nome_funcao == "declarar_guerra":
+    if nome_funcao == "informar_usuario":
+        return {"message": f"IA Informa: {argumentos.get('mensagem')}"}
+
+    elif nome_funcao == "gerar_evento_global":
+        nome_evento = argumentos.get("nome_evento")
+        duracao = argumentos.get("duracao_ticks")
+        world.global_event = nome_evento
+        db.commit()
+        return {
+            "message": f"Decreto executado: Evento global '{nome_evento}' iniciado!"
+        }
+
+    elif nome_funcao == "declarar_guerra":
         cla_agressor = (
             db.query(models.Clan)
             .filter(
