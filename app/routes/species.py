@@ -1,118 +1,100 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, status
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from typing import List
 
-# Importa a dependência 'get_db' para injetar a sessão do banco de dados.
-from app.dependencies import get_db
-
-# Importa os modelos SQLAlchemy e os schemas Pydantic.
-from ..database import models
+from ..dependencies import get_db
 from ..schemas import species as species_schemas
-from ..database.database import SessionLocal
 
-# Cria um APIRouter para organizar as rotas relacionadas a Espécies.
+COLLECTION_NAME = "species"
+
 router = APIRouter(
     prefix="/api/species",
-    tags=["Species"],  # Agrupa estas rotas na documentação da API.
+    tags=["Species (MongoDB)"],
     responses={404: {"description": "Not found"}},
 )
 
 
-# --- Endpoint para CRIAR uma nova espécie (POST) ---
-@router.post("/", response_model=species_schemas.Species, status_code=201)
-def create_species(
-    species: species_schemas.SpeciesCreate, db: Session = Depends(get_db)
+@router.post(
+    "/",
+    response_model=species_schemas.SpeciesResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_species(
+    species: species_schemas.SpeciesCreate, db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     """
-    Cria uma nova espécie no banco de dados.
+    Cria um novo documento de espécie na coleção 'species'.
     """
-    # Cria uma instância do modelo SQLAlchemy 'Species' a partir dos dados do schema Pydantic.
-    db_species = models.Species(**species.dict())
-    # Adiciona o novo objeto à sessão do SQLAlchemy.
-    db.add(db_species)
-    # Confirma a transação, salvando os dados no banco.
-    db.commit()
-    # Atualiza o objeto 'db_species' com os dados do banco (como o ID gerado).
-    db.refresh(db_species)
-    return db_species
+    species_dict = species.dict()
+
+    last_item = await db[COLLECTION_NAME].find_one(sort=[("_id", -1)])
+    new_id = (last_item["_id"] + 1) if last_item else 1
+
+    doc_to_insert = {"_id": new_id, **species_dict}
+
+    result = await db[COLLECTION_NAME].insert_one(doc_to_insert)
+    created_doc = await db[COLLECTION_NAME].find_one({"_id": result.inserted_id})
+    return created_doc
 
 
-# --- Endpoint para LER todas as espécies (GET) ---
-@router.get("/", response_model=List[species_schemas.Species])
-def read_all_species(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+@router.get("/", response_model=List[species_schemas.SpeciesResponse])
+async def read_all_species(
+    skip: int = 0, limit: int = 100, db: AsyncIOMotorDatabase = Depends(get_db)
+):
     """
     Retorna uma lista de todas as espécies, com suporte a paginação.
     """
-    # Constrói e executa uma consulta para buscar espécies, aplicando paginação.
-    species_list = db.query(models.Species).offset(skip).limit(limit).all()
-    return species_list
+    cursor = db[COLLECTION_NAME].find().skip(skip).limit(limit)
+    return await cursor.to_list(length=limit)
 
 
-# --- Endpoint para LER uma espécie específica pelo ID (GET) ---
-@router.get("/{species_id}", response_model=species_schemas.Species)
-def read_species_by_id(species_id: int, db: Session = Depends(get_db)):
+@router.get("/{species_id}", response_model=species_schemas.SpeciesResponse)
+async def read_species_by_id(
+    species_id: int, db: AsyncIOMotorDatabase = Depends(get_db)
+):
     """
     Retorna uma única espécie pelo seu ID.
     """
-    # Busca a primeira espécie que corresponde ao ID fornecido.
-    db_species = (
-        db.query(models.Species).filter(models.Species.id == species_id).first()
-    )
-    # Se nenhuma espécie for encontrada, lança um erro HTTP 404.
-    if db_species is None:
+    species_doc = await db[COLLECTION_NAME].find_one({"_id": species_id})
+    if species_doc is None:
         raise HTTPException(status_code=404, detail="Species not found")
-    return db_species
+    return species_doc
 
 
-# --- Endpoint para ATUALIZAR uma espécie (PUT) ---
-@router.put("/{species_id}", response_model=species_schemas.Species)
-def update_species(
+@router.put("/{species_id}", response_model=species_schemas.SpeciesResponse)
+async def update_species(
     species_id: int,
     species: species_schemas.SpeciesCreate,
-    db: Session = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """
-    Atualiza completamente os dados de uma espécie existente.
-    O método PUT espera que todos os campos do modelo sejam fornecidos no corpo da requisição.
+    Atualiza (substitui) completamente os dados de uma espécie existente.
     """
-    # Primeiro, busca a espécie que se deseja atualizar.
-    db_species = (
-        db.query(models.Species).filter(models.Species.id == species_id).first()
+    update_data = species.dict()
+
+    updated_doc = await db[COLLECTION_NAME].find_one_and_replace(
+        {"_id": species_id},
+        update_data,
+        return_document=True,
     )
-    if db_species is None:
-        raise HTTPException(status_code=404, detail="Species not found")
 
-    # Atualiza cada atributo do objeto SQLAlchemy com os novos dados do schema Pydantic.
-    db_species.name = species.name
-    db_species.base_health = species.base_health
-    db_species.base_strength = species.base_strength
+    if updated_doc is None:
+        raise HTTPException(
+            status_code=404, detail=f"Species with id {species_id} not found to update"
+        )
 
-    # Confirma a transação para salvar as alterações.
-    db.commit()
-    # Atualiza o objeto para refletir os dados salvos.
-    db.refresh(db_species)
-    return db_species
+    updated_doc["_id"] = species_id
+    return updated_doc
 
 
-# --- Endpoint para DELETAR uma espécie (DELETE) ---
-@router.delete("/{species_id}", status_code=204)
-def delete_species(species_id: int, db: Session = Depends(get_db)):
+@router.delete("/{species_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_species(species_id: int, db: AsyncIOMotorDatabase = Depends(get_db)):
     """
     Deleta uma espécie pelo seu ID.
     """
-    # Busca a espécie a ser deletada.
-    db_species = (
-        db.query(models.Species).filter(models.Species.id == species_id).first()
-    )
-    if db_species is None:
+    delete_result = await db[COLLECTION_NAME].delete_one({"_id": species_id})
+
+    if delete_result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Species not found")
 
-    # Remove o objeto da sessão do SQLAlchemy.
-    db.delete(db_species)
-    # Confirma a transação, efetivando a remoção no banco de dados.
-    db.commit()
-
-    # Para uma resposta com status 204 (No Content), o corpo da resposta deve ser vazio.
-    # Retornar `None` ou `Response(status_code=204)` é a prática padrão.
-    # O FastAPI pode lidar com o retorno de um dicionário, mas isso não é o ideal para este status code.
-    return  # Retorna uma resposta vazia.```
+    return

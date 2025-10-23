@@ -1,18 +1,25 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+import os
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./orbis.db"
+load_dotenv()
+MONGO_URI = os.getenv("MONGO_URI")
+if not MONGO_URI:
+    raise ValueError("A variável de ambiente MONGO_URI não foi configurada.")
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-)
+client = AsyncIOMotorClient(MONGO_URI)
+db = client.orbis_database
 
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
-)
+print("Conexão ASSÍNCRONA com o MongoDB estabelecida.")
 
-Base = declarative_base()
+worlds_collection = db.worlds
+species_collection = db.species
+clans_collection = db.clans
+characters_collection = db.characters
+events_collection = db.events
+resources_collection = db.resources
+territories_collection = db.territories
+missions_collection = db.missions
+relationships_collection = db.relationships
+
+world_analytics_collection = db.world_analytics

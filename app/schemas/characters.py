@@ -1,21 +1,25 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from datetime import datetime
 
 
-class CharacterBase(BaseModel):
+class CharacterPosition(BaseModel):
+    """Sub-documento para a posição do personagem."""
 
-    name: str
-    species_id: int
-    clan_id: Optional[int] = None
+    x: float
+    y: float
 
-    current_health: int
-    position_x: float
-    position_y: float
+
+class CharacterVitals(BaseModel):
+    """Sub-documento para os atributos vitais que mudam constantemente."""
 
     fome: int
     energia: int
     idade: int
-    reproduction_progress: int
+
+
+class CharacterPersonality(BaseModel):
+    """Sub-documento para os traços de personalidade, que são mais estáticos."""
 
     bravura: int
     cautela: int
@@ -24,27 +28,83 @@ class CharacterBase(BaseModel):
     inteligencia: int
 
 
-class CharacterCreate(CharacterBase):
+class CharacterStats(BaseModel):
+    """Sub-documento para as estatísticas agregadas de desempenho."""
 
-    pass
-
-
-class CharacterUpdate(BaseModel):
-
-    name: Optional[str] = None
-    clan_id: Optional[int] = None
-    current_health: Optional[int] = None
-    position_x: Optional[float] = None
-    position_y: Optional[float] = None
-
-    fome: Optional[int] = None
-    energia: Optional[int] = None
+    kills: int
+    deaths: int
+    damageDealt: int
+    resourcesCollected: int
 
 
-class Character(CharacterBase):
+class CharacterInventoryItem(BaseModel):
+    """Schema para um único item no inventário do personagem."""
+
+    resource_id: int
+    name: str
+    quantity: int
+
+
+class NotableEvent(BaseModel):
+    """Schema para um evento na "timeline" de um personagem."""
+
+    timestamp: datetime
+    type: str
+    description: str
+
+
+class EmbeddedClan(BaseModel):
+    """Representação embutida de um clã, para evitar a necessidade de 'joins'."""
 
     id: int
+    name: str
+
+
+class EmbeddedSpecies(BaseModel):
+    """Representação embutida de uma espécie."""
+
+    id: int
+    name: str
+    base_strength: int
+
+
+class CharacterSummaryResponse(BaseModel):
+    """
+    Este é o novo schema principal para um personagem, representando o documento
+    da coleção `characters` (character_summaries). É usado para validar e
+    documentar as respostas da API quando retornamos dados de um personagem.
+    """
+
+    id: int = Field(..., alias="_id")
+    name: str
+    world_id: int
+    status: str
+    species: EmbeddedSpecies
+    clan: Optional[EmbeddedClan] = None
+    current_health: int
+    position: CharacterPosition
+    vitals: CharacterVitals
+    personality: CharacterPersonality
+    stats: CharacterStats
+    inventory: List[CharacterInventoryItem] = []
+    notableEvents: List[NotableEvent] = []
+    lastUpdate: datetime
 
     class Config:
-
         from_attributes = True
+        populate_by_name = True
+        json_encoders = {datetime: lambda dt: dt.isoformat()}
+
+
+class CharacterCreate(BaseModel):
+    """
+    Schema para criar um novo personagem via API (se você tiver essa funcionalidade).
+    Os campos aqui seriam mais simples do que o schema de resposta.
+    """
+
+    name: str
+    world_id: int
+    species_id: int
+    clan_id: Optional[int] = None
+    start_pos_x: float = 500.0
+    start_pos_y: float = 500.0
