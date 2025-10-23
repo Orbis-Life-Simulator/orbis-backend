@@ -84,7 +84,6 @@ def interpretar_decreto(decreto_usuario: str, contexto_mundo: str) -> dict | Non
     para ele gerar um JSON estruturado como resposta.
     """
     try:
-        # Usando a forma correta e funcional de instanciar o modelo
         model = genai.GenerativeModel(model_name="gemini-pro")
 
         prompt_final = PROMPT_TEMPLATE.format(

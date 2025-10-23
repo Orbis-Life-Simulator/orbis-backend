@@ -1,12 +1,5 @@
-from sqlalchemy.orm import Session
-
-from app.database.database import SessionLocal
+from .database.database import db
 
 
 def get_db():
-
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    return db

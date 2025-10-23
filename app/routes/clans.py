@@ -1,91 +1,111 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, status
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from typing import List
 
-# Importa a função `get_db` que fornece uma sessão de banco de dados para a rota.
-# Este é o mecanismo de Injeção de Dependência do FastAPI.
-from app.dependencies import get_db
-
-# Importa os modelos de dados do SQLAlchemy (a representação das tabelas do banco de dados).
-from ..database import models
-
-# Importa os schemas Pydantic para clãs (a representação dos dados na API).
+from ..dependencies import get_db
 from ..schemas import clans as clan_schemas
 
-# Embora `get_db` seja o método preferencial, esta importação também está presente.
-from ..database.database import SessionLocal
+COLLECTION_NAME = "clans"
 
-# Cria uma instância de APIRouter para organizar as rotas relacionadas a clãs.
-# Todas as rotas neste arquivo serão prefixadas com "/api/clans".
 router = APIRouter(
     prefix="/api/clans",
-    # A tag "Clans" agrupará estas rotas na documentação automática da API (Swagger UI).
-    tags=["Clans"],
-    # Define uma resposta padrão para o erro 404 (Não Encontrado) na documentação.
+    tags=["Clans (MongoDB)"],
     responses={404: {"description": "Not found"}},
 )
 
 
-# --- Endpoint para CRIAR um novo clã (POST) ---
-@router.post("/", response_model=clan_schemas.Clan, status_code=201)
-def create_clan(clan: clan_schemas.ClanCreate, db: Session = Depends(get_db)):
+@router.post(
+    "/", response_model=clan_schemas.ClanResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_clan(
+    clan: clan_schemas.ClanCreate, db: AsyncIOMotorDatabase = Depends(get_db)
+):
     """
-    Cria um novo clã.
-
-    - `clan`: O corpo da requisição (JSON) é validado pelo schema Pydantic `ClanCreate`.
-    - `db`: Uma sessão do banco de dados é injetada na função pela dependência `get_db`.
-    - `response_model`: Garante que a resposta da API será formatada de acordo com o schema `Clan`.
-    - `status_code`: Define o código de status HTTP como 201 (Created) para uma criação bem-sucedida.
+    Cria um novo documento de clã na coleção 'clans'.
     """
-    # Cria uma instância do modelo SQLAlchemy `models.Clan` a partir dos dados do schema Pydantic.
-    db_clan = models.Clan(**clan.dict())
+    clan_dict = clan.dict()
 
-    # Adiciona o novo objeto de clã à sessão do SQLAlchemy (preparando para salvar).
-    db.add(db_clan)
-    # Confirma a transação, salvando o novo clã no banco de dados.
-    db.commit()
-    # Atualiza o objeto `db_clan` com os dados recém-salvos (incluindo o ID gerado pelo banco).
-    db.refresh(db_clan)
+    species_doc = await db.species.find_one({"_id": clan_dict["species_id"]})
+    if not species_doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Species with id {clan_dict['species_id']} not found.",
+        )
 
-    # Retorna o clã criado, que será serializado para JSON pelo FastAPI.
-    return db_clan
+    world_doc = await db.worlds.find_one({"_id": clan_dict["world_id"]})
+    if not world_doc:
+        raise HTTPException(
+            status_code=404, detail=f"World with id {clan_dict['world_id']} not found."
+        )
+
+    last_clan = await db[COLLECTION_NAME].find_one(sort=[("_id", -1)])
+    new_id = (last_clan["_id"] + 1) if last_clan else 1
+
+    new_clan_doc = {
+        "_id": new_id,
+        **clan_dict,
+    }
+
+    result = await db[COLLECTION_NAME].insert_one(new_clan_doc)
+
+    created_doc = await db[COLLECTION_NAME].find_one({"_id": result.inserted_id})
+    created_doc["species"] = {
+        "id": species_doc["_id"],
+        "name": species_doc["name"],
+    }
+
+    return created_doc
 
 
-# --- Endpoint para LER todos os clãs (GET) ---
-@router.get("/", response_model=List[clan_schemas.Clan])
-def read_all_clans(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+@router.get("/", response_model=List[clan_schemas.ClanResponse])
+async def read_all_clans(
+    skip: int = 0, limit: int = 100, db: AsyncIOMotorDatabase = Depends(get_db)
+):
     """
-    Retorna uma lista de todos os clãs, com suporte a paginação.
-
-    - `skip` e `limit`: Parâmetros de consulta (query parameters) para controlar a paginação.
+    Retorna uma lista de clãs com paginação.
+    Esta versão usa um pipeline de agregação para embutir os dados da espécie.
     """
-    # Executa uma consulta ao banco de dados para buscar todos os registros da tabela `Clan`.
-    # `.offset(skip)` pula os primeiros 'skip' registros.
-    # `.limit(limit)` restringe o número de resultados a 'limit'.
-    clans_list = db.query(models.Clan).offset(skip).limit(limit).all()
+    pipeline = [
+        {"$sort": {"_id": 1}},
+        {"$skip": skip},
+        {"$limit": limit},
+        {
+            "$lookup": {
+                "from": "species",
+                "localField": "species_id",
+                "foreignField": "_id",
+                "as": "species_info",
+            }
+        },
+        {"$unwind": "$species_info"},
+        {
+            "$project": {
+                "_id": 1,
+                "name": 1,
+                "world_id": 1,
+                "species": {"id": "$species_info._id", "name": "$species_info.name"},
+            }
+        },
+    ]
+    cursor = db[COLLECTION_NAME].aggregate(pipeline)
+    clans_list = await cursor.to_list(length=limit)
     return clans_list
 
 
-# --- Endpoint para LER um clã específico pelo ID (GET) ---
-@router.get("/{clan_id}", response_model=clan_schemas.Clan)
-def read_clan_by_id(clan_id: int, db: Session = Depends(get_db)):
+@router.get("/{clan_id}", response_model=clan_schemas.ClanResponse)
+async def read_clan_by_id(clan_id: int, db: AsyncIOMotorDatabase = Depends(get_db)):
     """
-    Retorna um único clã pelo seu ID.
-
-    - `clan_id`: Parâmetro de caminho (path parameter) extraído da URL.
+    Retorna um único clã pelo seu ID, com informações da espécie embutidas.
     """
-    # Consulta o banco de dados para encontrar o primeiro clã cujo ID corresponde ao fornecido.
-    db_clan = db.query(models.Clan).filter(models.Clan.id == clan_id).first()
+    clan_doc = await db[COLLECTION_NAME].find_one({"_id": clan_id})
 
-    # Se a consulta não retornar nenhum resultado, `db_clan` será None.
-    # Nesse caso, uma exceção HTTP 404 é lançada, resultando em uma resposta de erro para o cliente.
-    if db_clan is None:
-        raise HTTPException(status_code=404, detail="Clan not found")
+    if clan_doc is None:
+        raise HTTPException(status_code=404, detail=f"Clan with id {clan_id} not found")
 
-    # Se o clã foi encontrado, ele é retornado.
-    return db_clan
+    species_doc = await db.species.find_one({"_id": clan_doc["species_id"]})
+    if species_doc:
+        clan_doc["species"] = {"id": species_doc["_id"], "name": species_doc["name"]}
+    else:
+        clan_doc["species"] = {"id": clan_doc["species_id"], "name": "Unknown"}
 
-
-# Como o comentário sugere, este é o local ideal para adicionar endpoints
-# para atualizar (PUT/PATCH) e deletar (DELETE) clãs, seguindo padrões
-# semelhantes aos vistos em outros arquivos de rota.
+    return clan_doc

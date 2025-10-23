@@ -1,30 +1,38 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
-from sqlalchemy.orm import Session
-from ..database import models
+from fastapi import APIRouter, Depends, HTTPException, Body, status
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel
+from datetime import datetime, timezone
+
 from ..dependencies import get_db
 from ..simulation.divine_decree import interpretar_decreto
 
 router = APIRouter(
     prefix="/api/worlds/{world_id}/storyteller",
-    tags=["Storyteller (IA)"],
+    tags=["Storyteller (IA, MongoDB)"],
 )
-
-from pydantic import BaseModel
 
 
 class DivineDecreeRequest(BaseModel):
     decreto: str
 
 
-@router.post("/decree", status_code=200)
-def execute_divine_decree(
-    world_id: int, request: DivineDecreeRequest, db: Session = Depends(get_db)
+@router.post("/decree", status_code=status.HTTP_200_OK)
+async def execute_divine_decree(
+    world_id: int,
+    request: DivineDecreeRequest,
+    db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    world = db.query(models.World).filter(models.World.id == world_id).first()
-    if not world:
+    """
+    Recebe um comando em linguagem natural, coleta contexto do mundo,
+    interpreta com a IA (Gemini) e executa a ação correspondente no MongoDB.
+    """
+    world_doc = await db.worlds.find_one({"_id": world_id})
+    if not world_doc:
         raise HTTPException(status_code=404, detail="Mundo não encontrado.")
 
-    contexto_para_ia = f"Evento global atual: {world.global_event or 'Nenhum'}."
+    contexto_para_ia = (
+        f"Evento global atual: {world_doc.get('global_event', 'Nenhum')}."
+    )
     print(f"Contexto enviado para a IA: {contexto_para_ia}")
 
     comando_ia = interpretar_decreto(request.decreto, contexto_para_ia)
@@ -35,72 +43,51 @@ def execute_divine_decree(
             detail="A IA não conseguiu interpretar o seu decreto. Tente ser mais específico.",
         )
 
-    nome_funcao = comando_ia["name"]
-    argumentos = comando_ia["args"]
+    nome_funcao = comando_ia.get("name")
+    argumentos = comando_ia.get("args", {})
 
     if nome_funcao == "informar_usuario":
         return {"message": f"IA Informa: {argumentos.get('mensagem')}"}
 
     elif nome_funcao == "gerar_evento_global":
         nome_evento = argumentos.get("nome_evento")
-        duracao = argumentos.get("duracao_ticks")
-        world.global_event = nome_evento
-        db.commit()
+        await db.worlds.update_one(
+            {"_id": world_id}, {"$set": {"global_event": nome_evento}}
+        )
         return {
             "message": f"Decreto executado: Evento global '{nome_evento}' iniciado!"
         }
 
     elif nome_funcao == "declarar_guerra":
-        cla_agressor = (
-            db.query(models.Clan)
-            .filter(
-                models.Clan.name == argumentos["cla_agressor"],
-                models.Clan.world_id == world_id,
-            )
-            .first()
+        cla_agressor = await db.clans.find_one(
+            {"name": argumentos["cla_agressor"], "world_id": world_id}
         )
-        cla_alvo = (
-            db.query(models.Clan)
-            .filter(
-                models.Clan.name == argumentos["cla_alvo"],
-                models.Clan.world_id == world_id,
-            )
-            .first()
+        cla_alvo = await db.clans.find_one(
+            {"name": argumentos["cla_alvo"], "world_id": world_id}
         )
 
         if not cla_agressor or not cla_alvo:
             raise HTTPException(
                 status_code=404,
-                detail="Um ou ambos os clãs mencionados não foram encontrados neste mundo.",
+                detail="Um ou ambos os clãs mencionados não foram encontrados.",
             )
 
-        nova_guerra = models.ClanRelationship(
-            clan_a_id=cla_agressor.id,
-            clan_b_id=cla_alvo.id,
-            relationship_type=models.ClanRelationshipTypeEnum.WAR,
-        )
-        db.add(nova_guerra)
-        db.commit()
+        nova_guerra_doc = {
+            "clan_a_id": cla_agressor["_id"],
+            "clan_b_id": cla_alvo["_id"],
+            "relationship_type": "WAR",
+        }
+        await db.clan_relationships.insert_one(nova_guerra_doc)
         return {
-            "message": f"Decreto executado: {cla_agressor.name} está agora em guerra com {cla_alvo.name}."
+            "message": f"Decreto executado: {cla_agressor['name']} está agora em guerra com {cla_alvo['name']}."
         }
 
     elif nome_funcao == "criar_missao_conquista":
-        cla_executor = (
-            db.query(models.Clan)
-            .filter(
-                models.Clan.name == argumentos["cla_executor"],
-                models.Clan.world_id == world_id,
-            )
-            .first()
+        cla_executor = await db.clans.find_one(
+            {"name": argumentos["cla_executor"], "world_id": world_id}
         )
-        territorio = (
-            db.query(models.Territory)
-            .filter(
-                models.Territory.name == argumentos["territorio_alvo"],
-                models.Territory.world_id == world_id,
-            )
-            .first()
+        territorio = await db.territories.find_one(
+            {"name": argumentos["territorio_alvo"], "world_id": world_id}
         )
 
         if not cla_executor or not territorio:
@@ -109,24 +96,27 @@ def execute_divine_decree(
                 detail="O clã ou território mencionado não foi encontrado.",
             )
 
-        nova_missao = models.Mission(
-            world_id=world_id,
-            title=argumentos["titulo_missao"],
-            assignee_clan_id=cla_executor.id,
-            status="ATIVA",
-        )
-        db.add(nova_missao)
-        db.flush()
+        last_mission = await db.missions.find_one(sort=[("_id", -1)])
+        new_id = (last_mission["_id"] + 1) if last_mission else 1
 
-        objetivo = models.MissionObjective(
-            mission_id=nova_missao.id,
-            objective_type=models.ObjectiveTypeEnum.CONQUER_TERRITORY,
-            target_territory_id=territorio.id,
-        )
-        db.add(objetivo)
-        db.commit()
+        nova_missao_doc = {
+            "_id": new_id,
+            "world_id": world_id,
+            "title": argumentos["titulo_missao"],
+            "assignee_clan_id": cla_executor["_id"],
+            "status": "ATIVA",
+            "created_at": datetime.now(timezone.utc),
+            "objectives": [
+                {
+                    "objective_type": "CONQUER_TERRitory",
+                    "target_territory_id": territorio["_id"],
+                    "is_complete": False,
+                }
+            ],
+        }
+        await db.missions.insert_one(nova_missao_doc)
         return {
-            "message": f"Decreto executado: Missão '{nova_missao.title}' atribuída a {cla_executor.name}."
+            "message": f"Decreto executado: Missão '{nova_missao_doc['title']}' atribuída a {cla_executor['name']}."
         }
 
     else:
