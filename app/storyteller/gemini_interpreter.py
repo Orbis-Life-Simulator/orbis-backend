@@ -12,67 +12,59 @@ if not api_key:
     )
 
 PROMPT_TEMPLATE = """
-Você é um interpretador de comandos para o simulador de mundos Orbis. Sua única tarefa é analisar o pedido do usuário, considerando o contexto atual do mundo, e traduzi-lo para uma estrutura JSON que o sistema possa executar.
+Você é um interpretador de comandos para o simulador de mundos Orbis. Sua tarefa é analisar o decreto do usuário, considerando o contexto do mundo, e traduzi-lo para uma estrutura JSON que o sistema possa executar.
 
 As funções disponíveis são:
-1. `declarar_guerra`: Inicia um conflito entre dois clãs.
+1. `declarar_guerra`: Inicia um conflito entre dois clãs existentes.
    Parâmetros: `cla_agressor` (string), `cla_alvo` (string).
 
-2. `formar_alianca`: Cria uma aliança entre dois clãs.
+2. `formar_alianca`: Cria uma aliança entre dois clãs existentes.
    Parâmetros: `cla_A` (string), `cla_B` (string).
 
-3. `criar_missao_conquista`: Cria uma missão para conquistar um território.
+3. `criar_missao_conquista`: Cria uma missão para um clã conquistar um território.
    Parâmetros: `cla_executor` (string), `territorio_alvo` (string), `titulo_missao` (string).
 
 4. `gerar_evento_global`: Inicia um evento que afeta o mundo todo.
-   Parâmetros: `nome_evento` (string, ex: "PRAGA", "INVERNO_RIGOROSO"), `duracao_ticks` (integer).
+   Parâmetros: `nome_evento` (string, ex: "PRAGA"), `duracao_ticks` (integer).
 
-5. `informar_usuario`: Usado quando o pedido do usuário não pode ser executado por causa do estado atual do mundo.
-   Parâmetros: `mensagem` (string, explicando o motivo).
+5. `adicionar_populacao`: Adiciona uma nova espécie e seu clã ao mundo existente.
+   Parâmetros: `nome_especie` (string), `quantidade_agentes` (integer), `nome_cla` (string), `nome_territorio` (string).
 
+6. `informar_usuario`: Usado quando o pedido não pode ser executado.
+   Parâmetros: `mensagem` (string).
 
-Analise o pedido do usuário e retorne APENAS o JSON correspondente, sem nenhuma outra palavra ou explicação.
+Analise o pedido e retorne APENAS o JSON correspondente.
 
-**Exemplo 1:**
-Contexto Atual do Mundo: Nenhum evento global ativo.
-Pedido do usuário: "Faça o Clã Martelo de Ferro declarar guerra à Corte de Aetherion."
+**Exemplo 1 (Guerra):**
+Pedido: "Faça o Clã Martelo de Ferro declarar guerra à Corte de Aetherion."
 Sua resposta:
 {{
   "name": "declarar_guerra",
-  "args": {{
-    "cla_agressor": "Clã Martelo de Ferro",
-    "cla_alvo": "Corte de Aetherion"
-  }}
+  "args": {{"cla_agressor": "Clã Martelo de Ferro", "cla_alvo": "Corte de Aetherion"}}
 }}
 
-**Exemplo 2:**
-Contexto Atual do Mundo: Já existe um evento de 'PRAGA' ativo.
-Pedido do usuário: "Inicie uma praga no mundo."
+**Exemplo 2 (Nova População - SANDBOX):**
+Pedido: "Adicione 15 Goblins ao mundo. Eles serão o 'Clã Perna de Pau' e viverão em um novo território chamado 'As Colinas Verdes'."
 Sua resposta:
 {{
-  "name": "informar_usuario",
+  "name": "adicionar_populacao",
   "args": {{
-    "mensagem": "Não é possível iniciar uma 'PRAGA', pois este evento já está ativo no mundo."
+    "nome_especie": "Goblin",
+    "quantidade_agentes": 15,
+    "nome_cla": "Clã Perna de Pau",
+    "nome_territorio": "As Colinas Verdes"
   }}
 }}
 
-**Exemplo 3:**
-Contexto Atual do Mundo: Nenhum evento global ativo.
-Pedido do usuário: "Quero que um inverno rigoroso dure por 200 ticks."
+**Exemplo 3 (Evento Global - STORYTELLER):**
+Pedido: "Quero que um inverno rigoroso dure por 200 ticks."
 Sua resposta:
 {{
   "name": "gerar_evento_global",
-  "args": {{
-    "nome_evento": "INVERNO_RIGOROSO",
-    "duracao_ticks": 200
-  }}
+  "args": {{"nome_evento": "INVERNO_RIGOROSO", "duracao_ticks": 200}}
 }}
 
-Agora, processe o seguinte pedido.
-
-Contexto Atual do Mundo:
-{contexto_mundo}
-
+Contexto Atual do Mundo: {contexto_mundo}
 Pedido do usuário: "{user_decreto}"
 Sua resposta:
 """

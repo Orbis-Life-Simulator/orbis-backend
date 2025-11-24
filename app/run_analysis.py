@@ -1,224 +1,230 @@
 import os
+import sys
 from dotenv import load_dotenv
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, count, when, avg, lit
+import pandas as pd
+import pymongo
+from bson import ObjectId
+from datetime import datetime, timezone
 
 
-def setup_spark_session() -> SparkSession:
-    """Configura e retorna uma sessão do Spark com o conector MongoDB."""
+def get_db_connection():
     load_dotenv()
     MONGO_URI = os.getenv("MONGO_URI")
-    if not MONGO_URI:
-        raise ValueError("MONGO_URI não encontrada no arquivo .env")
-
-    print("Configurando a sessão do Spark com o conector MongoDB...")
-    spark = (
-        SparkSession.builder.appName("OrbisAnalysis")
-        .config("spark.mongodb.input.uri", MONGO_URI)
-        .config("spark.mongodb.output.uri", MONGO_URI)
-        .config(
-            "spark.jars.packages", "org.mongodb.spark:mongo-spark-connector_2.12:3.0.1"
-        )
-        .getOrCreate()
-    )
-    return spark
-
-
-def load_data(spark: SparkSession, collection_name: str) -> DataFrame | None:
-    """Carrega uma coleção do MongoDB para um DataFrame do Spark."""
-    print(f"Lendo a coleção '{collection_name}' do MongoDB...")
-    try:
-        df = spark.read.format("mongo").option("collection", collection_name).load()
-        df.cache()
-        print(f"Total de {df.count()} documentos lidos de '{collection_name}'.")
-        if df.count() == 0:
-            print(f"Aviso: Coleção '{collection_name}' está vazia.")
-            return None
-        return df
-    except Exception as e:
-        print(f"Erro ao ler a coleção '{collection_name}'. Erro: {e}")
-        return None
-
-
-def write_report(df: DataFrame, collection_name: str):
-    """Salva um DataFrame de relatório no MongoDB, sobrescrevendo a coleção."""
-    if df:
-        print(f"Salvando relatório na coleção '{collection_name}'...")
-        df.write.format("mongo").option("collection", collection_name).mode(
-            "overwrite"
-        ).save()
-        print("Relatório salvo com sucesso.")
-
-
-def analyze_population(events_df: DataFrame):
-    """Gera o relatório de Demografia e População."""
-    if not events_df:
-        return None
-
-    print("\n--- Gerando Relatório: Demografia e População ---")
-
-    births = (
-        events_df.filter(col("eventType") == "CHARACTER_BIRTH")
-        .groupBy("payload.child.species")
-        .agg(count("*").alias("total_births"))
-    )
-
-    deaths = (
-        events_df.filter(col("eventType") == "CHARACTER_DEATH")
-        .groupBy("payload.character.species")
-        .agg(count("*").alias("total_deaths"))
-    )
-
-    report_df = (
-        births.join(deaths, births["species"] == deaths["species"], "full_outer")
-        .select(
-            when(births["species"].isNotNull(), births["species"])
-            .otherwise(deaths["species"])
-            .alias("species"),
-            col("total_births"),
-            col("total_deaths"),
-        )
-        .fillna(0)
-    )
-
-    print("Resultado - Crescimento Populacional por Espécie:")
-    report_df.show()
-    return report_df
-
-
-def analyze_combat(events_df: DataFrame):
-    """Gera o relatório de Combate e Sobrevivência (K/D Ratio)."""
-    if not events_df:
-        return None
-
-    print("\n--- Gerando Relatório: Combate e Sobrevivência ---")
-
-    deaths_df = events_df.filter(
-        (col("eventType") == "CHARACTER_DEATH")
-        & (col("payload.reason") == "Morto em combate")
-    )
-
-    if deaths_df.count() == 0:
-        print("Nenhum evento de morte em combate encontrado.")
-        return None
-
-    deaths_by_species = deaths_df.groupBy("payload.character.species").agg(
-        count("*").alias("deaths")
-    )
-    kills_by_species = deaths_df.groupBy("payload.killed_by.species").agg(
-        count("*").alias("kills")
-    )
-
-    report_df = (
-        kills_by_species.join(
-            deaths_by_species,
-            kills_by_species["species"] == deaths_by_species["species"],
-            "full_outer",
-        )
-        .select(
-            when(kills_by_species["species"].isNotNull(), kills_by_species["species"])
-            .otherwise(deaths_by_species["species"])
-            .alias("species"),
-            col("kills"),
-            col("deaths"),
-        )
-        .fillna(0)
-        .withColumn(
-            "kd_ratio",
-            when(col("deaths") > 0, col("kills") / col("deaths")).otherwise(
-                col("kills")
-            ),
-        )
-    )
-
-    print("Resultado - K/D Ratio por Espécie:")
-    report_df.show()
-    return report_df
-
-
-def analyze_socio_politics(events_df: DataFrame):
-    """Gera o relatório Sócio-Político."""
-    if not events_df:
-        return None
-
-    print("\n--- Gerando Relatório: Sócio-Política ---")
-
-    alliances = (
-        events_df.filter(col("eventType") == "ALLIANCE_FORMED")
-        .select(col("payload.clanA.name").alias("clan_name"))
-        .union(
-            events_df.filter(col("eventType") == "ALLIANCE_FORMED").select(
-                col("payload.clanB.name").alias("clan_name")
-            )
-        )
-        .groupBy("clan_name")
-        .agg(count("*").alias("alliances_formed"))
-    )
-
-    deaths = (
-        events_df.filter(
-            (col("eventType") == "CHARACTER_DEATH")
-            & (col("payload.reason") == "Morto em combate")
-        )
-        .select("payload.character.clan.name", "payload.killed_by.clan.name")
-        .withColumnRenamed("name", "victim_clan")
-        .withColumnRenamed("name", "killer_clan")
-    )
-
-    war_casualties = deaths.groupBy("victim_clan", "killer_clan").agg(
-        count("*").alias("total_casualties")
-    )
-
-    print("Resultado - Alianças Formadas por Clã:")
-    alliances.show()
-    print("Resultado - Baixas Totais entre Clãs:")
-    war_casualties.show()
-    return alliances
-
-
-def analyze_geospatial(events_df: DataFrame):
-    """Gera o relatório Geoespacial (Heatmap de Conflitos)."""
-    if not events_df:
-        return None
-
-    print("\n--- Gerando Relatório: Geoespacial ---")
-
-    combat_locations = events_df.filter(col("eventType") == "COMBAT_ACTION").select(
-        "payload.location.x", "payload.location.y"
-    )
-
-    heatmap_df = (
-        combat_locations.withColumn("grid_x", (col("x") / 50).cast("integer") * 50)
-        .withColumn("grid_y", (col("y") / 50).cast("integer") * 50)
-        .groupBy("grid_x", "grid_y")
-        .agg(count("*").alias("conflict_intensity"))
-    )
-
-    print("Resultado - Heatmap de Zonas de Conflito:")
-    heatmap_df.sort(col("conflict_intensity").desc()).show()
-    return heatmap_df
+    client = pymongo.MongoClient(MONGO_URI)
+    return client.get_default_database()
 
 
 def main():
-    """Job principal de análise de dados do Orbis."""
-    spark = setup_spark_session()
+    if len(sys.argv) < 2:
+        print("Erro: ID do mundo não fornecido.")
+        return
 
-    events_df = load_data(spark, "events")
+    target_world_id_str = sys.argv[1]
 
-    population_report = analyze_population(events_df)
-    write_report(population_report, "report_population_growth")
+    try:
+        db = get_db_connection()
+        try:
+            world_obj_id = ObjectId(target_world_id_str)
+        except Exception:
+            print(f"Erro: ID do mundo inválido: {target_world_id_str}")
+            return
 
-    combat_report = analyze_combat(events_df)
-    write_report(combat_report, "report_combat_kd_ratio")
+        print(f"Iniciando análise para o mundo: {world_obj_id}")
 
-    socio_politics_report = analyze_socio_politics(events_df)
-    write_report(socio_politics_report, "report_alliances_formed")
+        # Busca eventos de morte e aliança
+        cursor = db.events.find(
+            {
+                "worldId": world_obj_id,
+                "eventType": {"$in": ["CHARACTER_DEATH", "ALLIANCE_FORMED"]},
+            }
+        )
+        events = list(cursor)
 
-    geospatial_report = analyze_geospatial(events_df)
-    write_report(geospatial_report, "report_conflict_heatmap")
+        if not events:
+            print("Nenhum evento relevante encontrado.")
+            empty_payload = {
+                "report_total_deaths": [],
+                "report_combat_kd_ratio": [],
+                "report_alliances_formed": [],
+                "report_conflict_heatmap": [],
+                "last_analysis_at": datetime.now(timezone.utc).isoformat(),
+            }
+            db.world_analytics.update_one(
+                {"_id": world_obj_id},
+                {"$set": {"spark_reports": empty_payload}},
+                upsert=True,
+            )
+            return
 
-    print("\nJob de Análise do Orbis concluído.")
-    spark.stop()
+        death_records = []
+        alliance_records = []
+
+        print(f"Processando {len(events)} eventos...")
+
+        for evt in events:
+            payload = evt.get("payload", {})
+
+            if evt["eventType"] == "CHARACTER_DEATH":
+                # --- EXTRAÇÃO DA VÍTIMA ---
+                char = payload.get("character", {})
+                victim_species = "Desconhecido"
+                if isinstance(char.get("species"), dict):
+                    victim_species = char["species"].get("name") or "Desconhecido"
+                elif isinstance(char.get("species"), str):
+                    victim_species = char["species"]
+
+                victim_id = str(char.get("id") or "unknown")
+                reason = payload.get("reason", "Desconhecido")
+
+                # --- EXTRAÇÃO DO ASSASSINO (CORREÇÃO) ---
+                # Definimos um padrão "N/A" para não quebrar o gráfico se falhar
+                killer_species = "N/A"
+                killer_id = "N/A"
+
+                killed_by = payload.get("killed_by")
+
+                # Só tentamos extrair se killed_by existir e não for vazio
+                if killed_by and isinstance(killed_by, dict) and killed_by.get("id"):
+                    k_spec = killed_by.get("species")
+                    if isinstance(k_spec, dict):
+                        killer_species = k_spec.get("name") or "Desconhecido"
+                    elif isinstance(k_spec, str):
+                        killer_species = k_spec
+
+                    killer_id = str(killed_by.get("id"))
+
+                # --- LOCALIZAÇÃO ---
+                loc = payload.get("location") or evt.get("location")
+                loc_x = loc.get("x") if isinstance(loc, dict) else None
+                loc_y = loc.get("y") if isinstance(loc, dict) else None
+
+                death_records.append(
+                    {
+                        "victim_id": victim_id,
+                        "victim_species": victim_species,
+                        "reason": reason,
+                        "killer_species": killer_species,
+                        "killer_id": killer_id,
+                        "x": loc_x,
+                        "y": loc_y,
+                    }
+                )
+
+            elif evt["eventType"] == "ALLIANCE_FORMED":
+                clanA = payload.get("clanA", {}).get("name")
+                clanB = payload.get("clanB", {}).get("name")
+                if clanA and clanB:
+                    alliance_records.append({"clan": clanA})
+                    alliance_records.append({"clan": clanB})
+
+        df_deaths = pd.DataFrame(death_records)
+
+        # --- 1. Total de Mortes ---
+        total_deaths_report = []
+        if not df_deaths.empty:
+            grouped = (
+                df_deaths.groupby("victim_species")["victim_id"].nunique().reset_index()
+            )
+            grouped.columns = ["species", "total_deaths"]
+            grouped = grouped.sort_values("total_deaths", ascending=False)
+            total_deaths_report = grouped.to_dict(orient="records")
+
+        # --- 2. K/D Ratio (CORRIGIDO PARA SER PERMISSIVO) ---
+        kd_report_list = []
+        if not df_deaths.empty:
+            # Filtra apenas onde a razão é EXATAMENTE "Morto em combate"
+            # Removemos o filtro de killer_species.notna() que estava limpando tudo
+            combat_df = df_deaths[df_deaths["reason"] == "Morto em combate"].copy()
+
+            # Debug print para ver se encontrou algo
+            print(f"Mortes em combate encontradas: {len(combat_df)}")
+
+            if not combat_df.empty:
+                # Kills: Agrupa por quem matou (mesmo que seja "N/A")
+                kills = (
+                    combat_df.groupby("killer_species")["killer_id"]
+                    .nunique()
+                    .reset_index()
+                )
+                kills.columns = ["species", "kills"]
+
+                # Deaths: Agrupa por quem morreu
+                deaths = (
+                    combat_df.groupby("victim_species")["victim_id"]
+                    .nunique()
+                    .reset_index()
+                )
+                deaths.columns = ["species", "deaths"]
+
+                # Junta tudo. Se tiver "N/A", ele vai aparecer no gráfico, mostrando que há dados mas sem espécie.
+                merged = pd.merge(kills, deaths, on="species", how="outer").fillna(0)
+
+                # Remove a linha "N/A" se ela existir e não tiver kills reais, ou mantém para debug
+                merged = merged[merged["species"] != "N/A"]
+
+                # Calcula Ratio
+                merged["kd_ratio"] = merged.apply(
+                    lambda row: (
+                        row["kills"] / row["deaths"]
+                        if row["deaths"] > 0
+                        else row["kills"]
+                    ),
+                    axis=1,
+                )
+
+                kd_report_list = merged.to_dict(orient="records")
+
+        # --- 3. Heatmap ---
+        heatmap_list = []
+        if not df_deaths.empty:
+            loc_df = df_deaths.dropna(subset=["x", "y"]).copy()
+            if not loc_df.empty:
+                loc_df["grid_x"] = (loc_df["x"] // 50).astype(int) * 50
+                loc_df["grid_y"] = (loc_df["y"] // 50).astype(int) * 50
+                heatmap_data = (
+                    loc_df.groupby(["grid_x", "grid_y"])
+                    .size()
+                    .reset_index(name="conflict_intensity")
+                )
+                heatmap_list = heatmap_data.to_dict(orient="records")
+
+        # --- 4. Alianças ---
+        alliances_list = []
+        if alliance_records:
+            df_alliances = pd.DataFrame(alliance_records)
+            grouped = (
+                df_alliances.groupby("clan").size().reset_index(name="alliances_formed")
+            )
+            grouped = grouped.rename(columns={"clan": "clan_name"})
+            alliances_list = grouped.to_dict(orient="records")
+
+        analytics_payload = {
+            "report_total_deaths": total_deaths_report,
+            "report_combat_kd_ratio": kd_report_list,
+            "report_alliances_formed": alliances_list,
+            "report_conflict_heatmap": heatmap_list,
+            "report_zombie_impact": [],
+            "report_predator_prey": [],
+            "report_war_casualties": [],
+            "last_analysis_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        print(
+            f"Resultados Finais: {len(total_deaths_report)} linhas de mortes totais, {len(kd_report_list)} linhas de K/D."
+        )
+
+        db.world_analytics.update_one(
+            {"_id": world_obj_id},
+            {"$set": {"spark_reports": analytics_payload}},
+            upsert=True,
+        )
+        print("Analytics salvos com sucesso.")
+
+    except Exception as e:
+        print(f"\n--- ERRO CRÍTICO ---")
+        import traceback
+
+        traceback.print_exc()
 
 
 if __name__ == "__main__":

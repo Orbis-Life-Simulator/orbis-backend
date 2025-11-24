@@ -1,4 +1,5 @@
 from enum import Enum
+import random
 from pymongo import UpdateOne
 
 from app.simulation.simulation_utils import (
@@ -212,7 +213,11 @@ class UtilitySelector(Node):
                 highest_score = score
                 best_consideration = consideration
 
+        # Threshold to decide whether a consideration is strong enough to override the default
+        # Lower threshold so considerações (especialmente ataque e reprodução) sejam
+        # mais facilmente escolhidas em vez do comportamento padrão.
         UTILITY_THRESHOLD = 10.0
+
         chosen_behavior_name = "Wander (Default)"
 
         if best_consideration and highest_score > UTILITY_THRESHOLD:
@@ -226,7 +231,7 @@ class UtilitySelector(Node):
             "highest_score": round(highest_score, 2),
             "all_scores": scores_info,
             "context": {
-                "health": character_doc["current_health"],
+                "health": character_doc.get("current_health"),
                 "enemies_near": len(enemies_in_range),
                 "allies_near": len(allies_in_range),
             },
@@ -356,15 +361,26 @@ class Flee(Node):
         update_operation = UpdateOne(
             {"_id": character_doc["_id"]}, {"$set": {"position": new_pos}}
         )
+        # Moving while fleeing consumes energy
         bulk_updates.append(update_operation)
+        bulk_updates.append(
+            UpdateOne(
+                {"_id": character_doc["_id"]},
+                {"$inc": {"vitals.energia": -MOVE_ENERGY_COST}},
+            )
+        )
 
         return NodeStatus.RUNNING
+
+
+# Arquivo: app/simulation/behavior_tree.py
 
 
 class Attack(Node):
     """
     Nó de ação que faz o personagem se mover em direção ao 'target_enemy'
-    e atacá-lo quando estiver no alcance.
+    e atacá-lo quando estiver no alcance. A função apenas aplica o dano;
+    a lógica de morte é centralizada no engine.
     """
 
     def tick(
@@ -377,6 +393,7 @@ class Attack(Node):
     ) -> NodeStatus:
 
         target_doc = blackboard.get("target_enemy")
+        # Garante que não estamos tentando atacar um personagem que já foi marcado como morto neste tick
         if not target_doc or target_doc.get("status") != "VIVO":
             return NodeStatus.FAILURE
 
@@ -406,8 +423,15 @@ class Attack(Node):
             bulk_updates.append(
                 UpdateOne({"_id": char_id}, {"$set": {"position": new_pos}})
             )
+            bulk_updates.append(
+                UpdateOne(
+                    {"_id": char_id}, {"$inc": {"vitals.energia": -MOVE_ENERGY_COST}}
+                )
+            )
             return NodeStatus.RUNNING
 
+        # <<< MUDANÇA PRINCIPAL COMEÇA AQUI >>>
+        # Se não está se movendo, está em alcance de ataque.
         else:
             damage = character_doc["species"].get("base_strength", 10)
 
@@ -416,11 +440,17 @@ class Attack(Node):
                     "id": char_id,
                     "name": character_doc["name"],
                     "species": character_doc["species"]["name"],
+                    "clan": character_doc.get("clan"),  # Adicionado clan do atacante
                 },
                 "defender": {
                     "id": target_id,
                     "name": target_doc["name"],
                     "species": target_doc["species"]["name"],
+                    "clan": target_doc.get("clan"),  # Adicionado clan do defensor
+                },
+                "location": {
+                    "x": target_doc["position"]["x"],
+                    "y": target_doc["position"]["y"],
                 },
                 "damageDealt": damage,
                 "defenderHealthAfter": target_doc["current_health"] - damage,
@@ -431,30 +461,23 @@ class Attack(Node):
                 )
             )
 
+            # 2. As operações de atualização de dano são mantidas.
             bulk_updates.append(
                 UpdateOne({"_id": target_id}, {"$inc": {"current_health": -damage}})
             )
-
             bulk_updates.append(
                 UpdateOne({"_id": char_id}, {"$inc": {"stats.damageDealt": damage}})
             )
 
+            # 3. A lógica de morte ('if health <= 0') foi COMPLETAMENTE REMOVIDA.
+            # A responsabilidade de verificar a vida e criar o evento de morte
+            # agora pertence ao 'engine.py', que fará isso de forma centralizada
+            # após todos os personagens agirem, evitando duplicatas e garantindo
+            # a integridade dos dados de 'kills'.
+
+            # Se o ataque deixar o alvo com vida negativa, incrementamos o kill count do atacante.
+            # O engine cuidará de marcar o alvo como MORTO.
             if (target_doc["current_health"] - damage) <= 0:
-                death_payload = {
-                    "character": {"id": target_id, "name": target_doc["name"]},
-                    "reason": "Morto em combate",
-                    "killed_by": {"id": char_id, "name": character_doc["name"]},
-                }
-                events_to_create.append(
-                    create_event(
-                        world_state["world"]["_id"], "CHARACTER_DEATH", death_payload
-                    )
-                )
-
-                bulk_updates.append(
-                    UpdateOne({"_id": target_id}, {"$set": {"status": "MORTO"}})
-                )
-
                 bulk_updates.append(
                     UpdateOne({"_id": char_id}, {"$inc": {"stats.kills": 1}})
                 )
@@ -490,20 +513,6 @@ class HelpAllyBehavior(Node):
 
         if "relationship_updates" in world_state:
             world_state["relationship_updates"].append(relationship_update_op)
-
-        help_payload = {
-            "helper": {"id": character_doc["_id"], "name": character_doc["name"]},
-            "ally_in_danger": {
-                "id": ally_in_danger["_id"],
-                "name": ally_in_danger["name"],
-            },
-            "threat": {"id": threat_to_ally["_id"], "name": threat_to_ally["name"]},
-        }
-        events_to_create.append(
-            create_event(
-                world_state["world"]["_id"], "CHARACTER_HELP_ALLY", help_payload
-            )
-        )
 
         blackboard["target_enemy"] = threat_to_ally
 
@@ -571,6 +580,17 @@ class HelpAllyConsideration(Consideration):
             ally_in_danger, threat = best_ally_to_help
             blackboard["ally_in_danger"] = ally_in_danger
             blackboard["threat_to_ally"] = threat
+
+            # If ally is critically low, prioritize helping strongly
+            try:
+                ally_health_ratio = ally_in_danger.get(
+                    "current_health", 100
+                ) / ally_in_danger.get("species", {}).get("base_health", 100)
+            except Exception:
+                ally_health_ratio = 1.0
+
+            if ally_health_ratio < 0.4:
+                return max(highest_urgency, 1000.0)
 
             return highest_urgency
 
@@ -678,6 +698,11 @@ class MoveToAndGatherResource(Node):
         if not target_node or target_node.get("is_depleted"):
             return NodeStatus.FAILURE
 
+        # Zombies do not gather resources
+        sp_name = str(character_doc.get("species", {}).get("name", "")).lower()
+        if "zumb" in sp_name or "zombie" in sp_name:
+            return NodeStatus.FAILURE
+
         is_moving, new_pos = move_towards_position(
             character_doc["position"],
             target_node["position"],
@@ -705,23 +730,15 @@ class MoveToAndGatherResource(Node):
             bulk_updates.append(
                 UpdateOne({"_id": char_id}, {"$set": {"position": new_pos}})
             )
+            # moving to attack consumes energy
+            bulk_updates.append(
+                UpdateOne(
+                    {"_id": char_id}, {"$inc": {"vitals.energia": -MOVE_ENERGY_COST}}
+                )
+            )
             return NodeStatus.RUNNING
 
         else:
-            gather_payload = {
-                "character": {"id": char_id, "name": character_doc["name"]},
-                "resource_node": {
-                    "id": target_node["_id"],
-                    "type_id": target_node["resource_type_id"],
-                },
-                "quantity": 1,
-            }
-            events_to_create.append(
-                create_event(
-                    world_state["world"]["_id"], "GATHER_RESOURCE", gather_payload
-                )
-            )
-
             item_exists = any(
                 item["resource_id"] == target_node["resource_type_id"]
                 for item in character_doc.get("inventory", [])
@@ -735,29 +752,51 @@ class MoveToAndGatherResource(Node):
                     },
                     {
                         "$inc": {
-                            "inventory.$.quantity": 1,
-                            "stats.resourcesCollected": 1,
+                            "inventory.$.quantity": GATHER_AMOUNT,
+                            "stats.resourcesCollected": GATHER_AMOUNT,
                         }
                     },
                 )
             else:
+                # Use resource_type metadata attached by engine when available
+                rt = target_node.get("resource_type", {}) or {}
                 new_item_doc = {
                     "resource_id": target_node["resource_type_id"],
-                    "name": "Nome do Recurso",
-                    "category": "COMIDA",  # Exemplo
-                    "quantity": 1,
+                    "name": rt.get("name", "Recurso"),
+                    "category": rt.get("category", "GENERIC"),
+                    "quantity": GATHER_AMOUNT,
                 }
                 update_op = UpdateOne(
                     {"_id": char_id},
                     {
                         "$push": {"inventory": new_item_doc},
-                        "$inc": {"stats.resourcesCollected": 1},
+                        "$inc": {"stats.resourcesCollected": GATHER_AMOUNT},
                     },
                 )
             bulk_updates.append(update_op)
 
+            # decrement resource node by the configured gather amount
             bulk_updates.append(
-                UpdateOne({"_id": target_node["_id"]}, {"$inc": {"quantity": -1}})
+                UpdateOne(
+                    {"_id": target_node["_id"]}, {"$inc": {"quantity": -GATHER_AMOUNT}}
+                )
+            )
+
+            # Emitir evento de coleta para o Spark/analytics
+            gather_payload = {
+                "character": {"id": char_id, "name": character_doc.get("name")},
+                "resource_type": {
+                    "id": target_node.get("resource_type_id"),
+                    "name": target_node.get("resource_type", {}).get("name"),
+                    "category": target_node.get("category"),
+                },
+                "location": target_node.get("position"),
+                "quantity": GATHER_AMOUNT,
+            }
+            events_to_create.append(
+                create_event(
+                    world_state["world"]["_id"], "CHARACTER_GATHER", gather_payload
+                )
             )
 
             return NodeStatus.SUCCESS
@@ -808,7 +847,8 @@ class GroupOrFollowObjective(Node):
                     {"_id": character_doc["_id"]}, {"$set": {"position": new_pos}}
                 )
                 update_energy_op = UpdateOne(
-                    {"_id": character_doc["_id"]}, {"$inc": {"vitals.energia": -1}}
+                    {"_id": character_doc["_id"]},
+                    {"$inc": {"vitals.energia": -MOVE_ENERGY_COST}},
                 )
                 bulk_updates.extend([update_pos_op, update_energy_op])
                 return NodeStatus.RUNNING
@@ -841,50 +881,22 @@ class Wander(Node):
             "from_pos": character_doc["position"],
             "to_pos": new_pos,
         }
-        events_to_create.append(
-            create_event(
-                world_state["world"]["_id"], "CHARACTER_MOVE_WANDER", move_payload
-            )
-        )
+        # events_to_create.append(
+        #     create_event(
+        #         world_state["world"]["_id"], "CHARACTER_MOVE_WANDER", move_payload
+        #     )
+        # )
 
         update_pos_op = UpdateOne(
             {"_id": character_doc["_id"]}, {"$set": {"position": new_pos}}
         )
         update_energy_op = UpdateOne(
-            {"_id": character_doc["_id"]}, {"$inc": {"vitals.energia": -1}}
+            {"_id": character_doc["_id"]},
+            {"$inc": {"vitals.energia": -WANDER_ENERGY_COST}},
         )
 
         bulk_updates.append(update_pos_op)
         bulk_updates.append(update_energy_op)
-
-        return NodeStatus.SUCCESS
-
-
-class Rest(Node):
-    """
-    Nó de ação que representa a decisão do personagem de ficar parado para descansar.
-    A regeneração de energia em si é tratada pelo 'engine', mas este nó registra
-    a intenção de descansar como um evento.
-    """
-
-    def tick(
-        self,
-        character_doc: dict,
-        world_state: dict,
-        blackboard: dict,
-        events_to_create: list,
-        bulk_updates: list,
-    ) -> NodeStatus:
-
-        rest_payload = {
-            "character": {"id": character_doc["_id"], "name": character_doc["name"]},
-            "location": character_doc["position"],
-        }
-        events_to_create.append(
-            create_event(
-                world_state["world"]["_id"], "CHARACTER_ACTION_REST", rest_payload
-            )
-        )
 
         return NodeStatus.SUCCESS
 
@@ -899,106 +911,210 @@ class FleeConsideration(Consideration):
     def calculate_utility(
         self, character_doc: dict, world_state: dict, blackboard: dict
     ) -> float:
-
-        if not blackboard.get("enemies_in_range"):
+        species_name = str(character_doc.get("species", {}).get("name", "")).lower()
+        if "zumb" in species_name or "zombie" in species_name:
             return 0.0
 
-        life_percentage = (
-            character_doc["current_health"] / character_doc["species"]["base_health"]
-        )
-        base_flee_desire = ((1.0 - life_percentage) ** 2) * 150
+        enemies = blackboard.get("enemies_in_range")
+        if not enemies:
+            return 0.0
+
+        life_percentage = character_doc.get("current_health", 0) / character_doc[
+            "species"
+        ].get("base_health", 100)
+
+        base_flee_desire = ((1.0 - life_percentage) ** 2) * 70
 
         bravura = character_doc.get("personality", {}).get("bravura", 50)
         bravery_modifier = 1.0 - ((bravura - 50) / 100.0)
+
         numerical_disadvantage = blackboard.get("numerical_advantage", 0)
-        disadvantage_modifier = 1.0 - min(0, numerical_disadvantage) * 0.2
-        return base_flee_desire * bravery_modifier * disadvantage_modifier
+        disadvantage_modifier = 1.0 - max(0, -numerical_disadvantage) * 0.15
+
+        score = base_flee_desire * bravery_modifier * disadvantage_modifier
+
+        if life_percentage < 0.25 or numerical_disadvantage < -2:
+            return max(score, 1000.0)
+
+        return max(0.0, score)
+
+
+# class AttackConsideration(Consideration):
+#     """
+#     COMPORTAMENTO AJUSTADO: Calcula a utilidade de atacar, agora considerando
+#     competição por recursos e agressividade por invasão de território.
+#     """
+
+#     def calculate_utility(
+#         self, character_doc: dict, world_state: dict, blackboard: dict
+#     ) -> float:
+#         enemies_in_range = blackboard.get("enemies_in_range")
+#         energia = character_doc.get("vitals", {}).get("energia", 100)
+
+#         if not enemies_in_range or energia < 20:
+#             return 0.0
+
+#         if (
+#             character_doc.get("current_health", 100)
+#             < character_doc["species"].get("base_health", 100) * 0.3
+#         ):
+#             return 0.0
+
+#         target_doc = blackboard.get("target_enemy")
+#         if not target_doc:
+#             return 0.0
+
+#         territory_aggression_modifier = 1.0
+#         char_pos = character_doc["position"]
+#         current_territory = get_territory_at_position(
+#             world_state["all_territories"], char_pos["x"], char_pos["y"]
+#         )
+#         char_clan_id = character_doc.get("clan", {}).get("id")
+#         if current_territory and current_territory.get("owner_clan_id") != char_clan_id:
+#             territory_aggression_modifier = 1.4
+
+#         resource_competition_bonus = 0.0
+#         fome = character_doc.get("vitals", {}).get("fome", 0)
+#         target_resource_node = blackboard.get("target_node")
+#         if fome > 60 and target_resource_node:
+#             dist_sq_enemy_to_resource = (
+#                 target_doc["position"]["x"] - target_resource_node["position"]["x"]
+#             ) ** 2 + (
+#                 target_doc["position"]["y"] - target_resource_node["position"]["y"]
+#             ) ** 2
+#             if dist_sq_enemy_to_resource < (VISION_RANGE / 2) ** 2:
+#                 resource_competition_bonus = 400.0
+
+#         life_modifier = (
+#             character_doc["current_health"] / character_doc["species"]["base_health"]
+#         )
+#         strength_ratio = (
+#             character_doc["species"]["base_strength"]
+#             / target_doc["species"]["base_strength"]
+#         )
+#         strength_modifier = max(0.5, min(1.5, strength_ratio))
+#         advantage = blackboard.get("numerical_advantage", 0)
+#         numerical_modifier = 1.0 + (advantage * 0.5)
+#         bravura = character_doc.get("personality", {}).get("bravura", 50)
+#         bravery_modifier = 0.75 + ((bravura / 100.0) * 0.75)
+#         ganancia = character_doc.get("personality", {}).get("ganancia", 50)
+#         greed_modifier = 1.0 + ((ganancia - 50) / 100.0) * 1.5
+
+#         species_name = str(character_doc.get("species", {}).get("name", "")).lower()
+#         species_aggression_map = {
+#             "orc": 1.5,
+#             "goblin": 1.4,
+#             "troll": 1.45,
+#             "zumbi": 2.0,
+#         }
+#         species_aggression = species_aggression_map.get(species_name, 1.0)
+
+#         base_attack_desire = 500.0
+
+#         final_score = (
+#             (
+#                 (base_attack_desire * territory_aggression_modifier)
+#                 + resource_competition_bonus
+#             )
+#             * life_modifier
+#             * strength_modifier
+#             * numerical_modifier
+#             * bravery_modifier
+#             * greed_modifier
+#             * species_aggression
+#         )
+
+#         return max(0.0, final_score)
 
 
 class AttackConsideration(Consideration):
-    """
-    Calcula a utilidade de atacar um inimigo.
-    A pontuação é influenciada pela vida e energia do personagem,
-    comparação de força, vantagem numérica, personalidade (bravura)
-    e relações pessoais (rivalidades).
-    """
+    def calculate_utility(self, character_doc, world_state, blackboard):
+        enemies = blackboard.get("enemies_in_range")
 
-    def calculate_utility(
-        self, character_doc: dict, world_state: dict, blackboard: dict
-    ) -> float:
+        if enemies:
+            return 1000.0
 
-        enemies_in_range = blackboard.get("enemies_in_range")
-        energia = character_doc.get("vitals", {}).get("energia", 100)
-
-        if not enemies_in_range or energia < 10:
-            return 0.0
-
-        target_doc = blackboard.get("target_enemy")
-        if not target_doc:
-            return 0.0
-
-        personal_rels = world_state.get("personal_rels_map", {})
-        rel_key = tuple(sorted((character_doc["_id"], target_doc["_id"])))
-        relationship = personal_rels.get(rel_key)
-
-        personal_modifier = 1.0
-        if relationship and relationship.get("relationship_score", 0) < 0:
-            personal_modifier = 1.0 + abs(relationship["relationship_score"]) / 100.0
-        life_modifier = (
-            character_doc["current_health"] / character_doc["species"]["base_health"]
-        )
-
-        strength_ratio = (
-            character_doc["species"]["base_strength"]
-            / target_doc["species"]["base_strength"]
-        )
-        strength_modifier = max(0.5, min(1.5, strength_ratio))
-        advantage = blackboard.get("numerical_advantage", 0)
-        numerical_modifier = 1.0 + (advantage * 0.3)
-
-        bravura = character_doc.get("personality", {}).get("bravura", 50)
-        bravery_modifier = 0.75 + ((bravura / 100.0) * 0.5)
-
-        base_attack_desire = 60.0
-        final_score = (
-            base_attack_desire
-            * life_modifier
-            * strength_modifier
-            * numerical_modifier
-            * bravery_modifier
-            * personal_modifier
-        )
-
-        return max(0, final_score)
+        return 0.0
 
 
 class EatConsideration(Consideration):
+    """
+    Calcula a utilidade de procurar/comer comida. A pontuação é influenciada
+    pela fome, personalidade (ganância, cautela), proximidade de recursos
+    e segurança do local.
+    """
+
     def calculate_utility(self, character_doc, world_state, blackboard):
         fome = character_doc.get("vitals", {}).get("fome", 0)
 
-        base_hunger_desire = (fome / 100.0) ** 2 * 150
+        # --- AJUSTE 1: Curva de fome mais agressiva ---
+        # Aumentamos o desejo base. A fome se torna uma preocupação mais cedo.
+        # A fórmula exponencial (fome^2) faz com que a urgência cresça rapidamente
+        # quando a fome atinge níveis críticos.
+        base_hunger_desire = ((fome / 100.0) ** 2) * 250.0 + (fome / 100.0 * 20.0)
+
+        # --- AJUSTE 2: Bônus de Oportunidade ---
+        # Verifica se há comida visível. Se sim, aumenta o desejo de coletar.
+        opportunity_bonus = 0.0
+        nearest_food_node = find_nearest_resource_node(
+            character_doc["position"],
+            world_state.get("all_resource_nodes", []),
+            resource_category="COMIDA",
+        )
+        if nearest_food_node:
+            char_pos = character_doc["position"]
+            node_pos = nearest_food_node["position"]
+            dist_sq = (node_pos["x"] - char_pos["x"]) ** 2 + (
+                node_pos["y"] - char_pos["y"]
+            ) ** 2
+
+            # Se a comida estiver muito perto, o bônus é maior.
+            if dist_sq < (VISION_RANGE / 2) ** 2:
+                opportunity_bonus = 60.0  # Bônus significativo por comida próxima
+            elif dist_sq < VISION_RANGE**2:
+                opportunity_bonus = 30.0  # Bônus menor por comida visível
 
         ganancia = character_doc.get("personality", {}).get("ganancia", 50)
-        greed_bonus = (ganancia / 100.0) * 10.0
+        # Personagens gananciosos são mais propensos a acumular recursos.
+        greed_bonus = (ganancia / 100.0) * 30.0
 
+        # --- AJUSTE 3: Modificador de Risco/Segurança ---
+        # A lógica de segurança é mantida, mas refinada.
         char_pos = character_doc["position"]
         current_territory = get_territory_at_position(
             world_state["all_territories"], char_pos["x"], char_pos["y"]
         )
-
         char_clan_id = character_doc.get("clan", {}).get("id")
 
-        is_safe = True
+        is_safe_location = True
         if current_territory and current_territory.get("owner_clan_id"):
+            # Território é considerado perigoso se não pertencer ao clã do personagem
             if current_territory["owner_clan_id"] != char_clan_id:
-                is_safe = False
+                is_safe_location = False
+
+        # Se houver inimigos por perto, o local NUNCA é seguro para coletar.
+        if blackboard.get("enemies_in_range"):
+            is_safe_location = False
 
         caution_modifier = 1.0
         cautela = character_doc.get("personality", {}).get("cautela", 50)
-        if not is_safe and cautela > 50:
-            caution_modifier = 1.0 - ((cautela - 50) / 50.0) * 0.8
+        if not is_safe_location:
+            # Personagens cautelosos recebem uma penalidade maior por coletar em locais perigosos.
+            # A penalidade escala com o nível de cautela.
+            caution_modifier = 1.0 - (cautela / 100.0) * 0.9
 
-        return (base_hunger_desire + greed_bonus) * caution_modifier
+        # A pontuação final combina a necessidade (fome), a oportunidade e a personalidade,
+        # ponderada pelo risco do local.
+        final_score = (
+            base_hunger_desire + opportunity_bonus + greed_bonus
+        ) * caution_modifier
+
+        # Se o personagem estiver morrendo de fome, a busca por comida se torna prioridade máxima,
+        # ignorando parcialmente o risco.
+        if fome > 95:
+            return max(final_score, 1000.0)
+
+        return max(0.0, final_score)
 
 
 class GroupConsideration(Consideration):
@@ -1022,7 +1138,8 @@ class GroupConsideration(Consideration):
             if dist_sq < (GROUPING_DISTANCE**2):
                 distance_modifier = 0.2
 
-        base_desire = 12.0
+        # Make grouping more attractive so characters form groups more often.
+        base_desire = 30.0
 
         gender_bonus = 0.0
         my_gender = character_doc.get("gender")
@@ -1035,16 +1152,120 @@ class GroupConsideration(Consideration):
         return (base_desire * (sociability / 50.0)) * distance_modifier + gender_bonus
 
 
-class RestConsideration(Consideration):
+class HasBuildingMaterials(Node):
+    """
+    Verifica se o personagem tem madeira e pedra suficientes no inventário.
+    """
+
+    def tick(
+        self, character_doc, world_state, blackboard, events_to_create, bulk_updates
+    ):
+        inv = character_doc.get("inventory", [])
+        wood_qty = 0
+        stone_qty = 0
+        for it in inv:
+            name = str(it.get("name", "")).lower()
+            cat = str(it.get("category", "")).lower()
+            qty = int(it.get("quantity", 0))
+            if (
+                "madeir" in name
+                or "wood" in name
+                or "madeira" in name
+                or cat == "madeira"
+            ):
+                wood_qty += qty
+            if "pedra" in name or "stone" in name or cat == "pedra":
+                stone_qty += qty
+
+        if wood_qty >= HOUSE_WOOD_COST and stone_qty >= HOUSE_STONE_COST:
+            blackboard["can_build_house"] = True
+            return NodeStatus.SUCCESS
+
+        return NodeStatus.FAILURE
+
+
+class BuildHouseAction(Node):
+    """
+    Consome madeira e pedra do inventário e registra um evento de construção.
+    Não cria coleção persistente de estruturas aqui; registra o evento e atualiza
+    o inventário/estatísticas do personagem.
+    """
+
+    def tick(
+        self, character_doc, world_state, blackboard, events_to_create, bulk_updates
+    ):
+        if not blackboard.get("can_build_house"):
+            return NodeStatus.FAILURE
+
+        char_id = character_doc["_id"]
+        # Criar evento
+        build_payload = {
+            "character": {"id": char_id, "name": character_doc.get("name")},
+            "location": character_doc.get("position"),
+            "costs": {"wood": HOUSE_WOOD_COST, "stone": HOUSE_STONE_COST},
+        }
+        events_to_create.append(
+            create_event(
+                world_state["world"]["_id"], "CHARACTER_BUILD_HOUSE", build_payload
+            )
+        )
+
+        # Deduzir recursos do inventário: usamos updates separados para madeira e pedra.
+        # Primeiro, decrement wood
+        bulk_updates.append(
+            UpdateOne(
+                {
+                    "_id": char_id,
+                    "inventory.name": {"$regex": "(?i)madeir|wood|madeira"},
+                },
+                {"$inc": {"inventory.$.quantity": -HOUSE_WOOD_COST}},
+            )
+        )
+        # Depois, decrement stone
+        bulk_updates.append(
+            UpdateOne(
+                {"_id": char_id, "inventory.name": {"$regex": "(?i)pedra|stone"}},
+                {"$inc": {"inventory.$.quantity": -HOUSE_STONE_COST}},
+            )
+        )
+
+        # Incrementa estatística de casas construídas
+        bulk_updates.append(
+            UpdateOne({"_id": char_id}, {"$inc": {"stats.housesBuilt": 1}})
+        )
+
+        return NodeStatus.SUCCESS
+
+
+class BuildHouseConsideration(Consideration):
     def calculate_utility(self, character_doc, world_state, blackboard):
+        # Prefer construir quando se tem muitos recursos e quando não há inimigos por perto
         if blackboard.get("enemies_in_range"):
             return 0.0
 
-        energia = character_doc.get("vitals", {}).get("energia", 100)
-        energy_percentage = energia / 100.0
+        inv = character_doc.get("inventory", [])
+        wood_qty = 0
+        stone_qty = 0
+        for it in inv:
+            name = str(it.get("name", "")).lower()
+            cat = str(it.get("category", "")).lower()
+            qty = int(it.get("quantity", 0))
+            if (
+                "madeir" in name
+                or "wood" in name
+                or "madeira" in name
+                or cat == "madeira"
+            ):
+                wood_qty += qty
+            if "pedra" in name or "stone" in name or cat == "pedra":
+                stone_qty += qty
 
-        score = (1.0 - energy_percentage) ** 2 * 120
-        return score
+        if wood_qty >= HOUSE_WOOD_COST and stone_qty >= HOUSE_STONE_COST:
+            # Score escalates with surplus resources
+            surplus = (wood_qty - HOUSE_WOOD_COST) + (stone_qty - HOUSE_STONE_COST)
+            return 80.0 + min(200.0, surplus * 5.0)
+
+        return 0.0
 
 
 def build_character_ai_tree():
@@ -1057,19 +1278,26 @@ def build_character_ai_tree():
         ]
     )
     group_behavior = GroupOrFollowObjective()
-    rest_behavior = Rest()
     wander_behavior = Wander()
     help_ally_behavior = HelpAllyBehavior()
-    reproduce_behavior = Sequence([ReproduceAction()])
+    build_house_behavior = Sequence([HasBuildingMaterials(), BuildHouseAction()])
+
+    seek_resource_behavior = Sequence(
+        [FindNeededResourceNode(), MoveToAndGatherResource()]
+    )
+
+    invade_behavior = InvadeEnemyTerritoryAction()
 
     considerations = [
-        FleeConsideration(flee_behavior),
+        # FleeConsideration(flee_behavior),
+        DefendTerritoryConsideration(combat_behavior),
         HelpAllyConsideration(help_ally_behavior),
         AttackConsideration(combat_behavior),
         EatConsideration(eat_behavior),
-        RestConsideration(rest_behavior),
+        SeekStrategicResourceConsideration(seek_resource_behavior),
+        InvadeConsideration(invade_behavior),
+        # BuildHouseConsideration(build_house_behavior),
         GroupConsideration(group_behavior),
-        ReproduceConsideration(reproduce_behavior),
     ]
 
     root = UtilitySelector(
@@ -1079,32 +1307,63 @@ def build_character_ai_tree():
 
 
 class ReproduceConsideration(Consideration):
-    def calculate_utility(self, character_doc, world_state, blackboard):
-        if (
-            blackboard.get("enemies_in_range")
-            or character_doc.get("vitals", {}).get("fome", 0) > 50
-            or character_doc.get("vitals", {}).get("energia", 100) < 50
-        ):
-            return 0.0
+    def calculate_utility(
+        self, character_doc: dict, world_state: dict, blackboard: dict
+    ) -> float:
 
-        my_gender = character_doc.get("gender")
-        potential_partner = None
-        for ally_doc in blackboard.get("allies_in_range", []):
-            if (
-                ally_doc.get("species", {}).get("id")
-                == character_doc.get("species", {}).get("id")
-                and ally_doc.get("gender")
-                and ally_doc.get("gender") != my_gender
-            ):
-                rel_key = tuple(sorted((character_doc["_id"], ally_doc["_id"])))
-                relationship = world_state.get("personal_rels_map", {}).get(rel_key)
-                if relationship and relationship.get("relationship_score", 0) > 20:
-                    potential_partner = ally_doc
-                    break
+        # # --- VERIFICAÇÕES DE BLOQUEIO DO PRÓPRIO PERSONAGEM ---
 
-        if potential_partner:
-            blackboard["partner"] = potential_partner
-            return 150.0
+        # # 1. Limite de Filhos: A verificação mais importante.
+        # # Usa .get() com um padrão alto (ex: 99) para garantir que, se o limite não for definido, a reprodução não aconteça.
+        # max_offspring = character_doc.get("species", {}).get("max_offspring", 1)
+        # if character_doc.get("stats", {}).get("children_count", 0) >= max_offspring:
+        #     return 0.0
+
+        # # 2. Idade Fértil (se você implementou)
+        # # ... (sua lógica de verificação de idade)
+
+        # # 3. Cooldown: Essencial para evitar spam de tentativas
+        # if character_doc.get("cooldowns", {}).get("reproduction", 0) > 0:
+        #     return 0.0
+
+        # # 4. Condições de Perigo e Vitais
+        # if (
+        #     blackboard.get("enemies_in_range")
+        #     or character_doc.get("vitals", {}).get("fome", 0) > 20
+        #     or character_doc.get("vitals", {}).get("energia", 100) < 80
+        # ):
+        #     return 0.0
+
+        # my_gender = character_doc.get("gender")
+        # if not my_gender:
+        #     return 0.0
+
+        # # --- VERIFICAÇÃO DO PARCEIRO ---
+        # potential_partner = None
+        # for ally_doc in blackboard.get("allies_in_range", []):
+        #     # O parceiro também não pode ter atingido o limite de filhos
+        #     partner_max_offspring = ally_doc.get("species", {}).get("max_offspring", 1)
+        #     if (
+        #         ally_doc.get("stats", {}).get("children_count", 0)
+        #         >= partner_max_offspring
+        #     ):
+        #         continue
+
+        #     if (
+        #         ally_doc.get("species", {}).get("id")
+        #         == character_doc.get("species", {}).get("id")
+        #         and ally_doc.get("gender")
+        #         and ally_doc.get("gender") != my_gender
+        #         and ally_doc.get("cooldowns", {}).get("reproduction", 0) == 0
+        #     ):
+        #         potential_partner = ally_doc
+        #         break
+
+        # # --- CÁLCULO DA PONTUAÇÃO ---
+        # if potential_partner:
+        #     blackboard["partner"] = potential_partner
+        #     # A pontuação pode ser alta, pois as condições para chegar aqui são muito raras
+        #     return 200.0
 
         return 0.0
 
@@ -1126,6 +1385,262 @@ class ReproduceAction(Node):
             create_event(world_state["world"]["_id"], "CHARACTER_BIRTH", birth_payload)
         )
 
+        bulk_updates.append(
+            UpdateOne(
+                {"_id": character_doc["_id"]},
+                {"$set": {"cooldowns.reproduction": REPRODUCTION_COOLDOWN_TICKS * 5}},
+            )
+        )
+        bulk_updates.append(
+            UpdateOne(
+                {"_id": partner["_id"]},
+                {"$set": {"cooldowns.reproduction": REPRODUCTION_COOLDOWN_TICKS * 5}},
+            )
+        )
+
         print(f"{character_doc['name']} e {partner['name']} tiveram um filho!")
+        return NodeStatus.SUCCESS
+
+
+class FindNeededResourceNode(Node):
+    """
+    Nó de condição que procura o recurso estratégico mais próximo que foi
+    identificado como "necessário" pela Consideration e o coloca no blackboard.
+    """
+
+    def tick(
+        self,
+        character_doc: dict,
+        world_state: dict,
+        blackboard: dict,
+        events_to_create: list,
+        bulk_updates: list,
+    ) -> NodeStatus:
+        needed_category = blackboard.get("needed_resource_category")
+        if not needed_category:
+            return NodeStatus.FAILURE
+
+        # Procura o nó mais próximo da categoria necessária em TODO o mapa
+        nearest_node = find_nearest_resource_node(
+            character_doc["position"],
+            world_state.get("all_resource_nodes", []),
+            resource_category=needed_category,
+        )
+
+        if nearest_node:
+            blackboard["target_node"] = nearest_node
+            return NodeStatus.SUCCESS
+
+        return NodeStatus.FAILURE
+
+
+class SeekStrategicResourceConsideration(Consideration):
+    """
+    Calcula a utilidade de sair do território para buscar um recurso essencial
+    que não está disponível localmente. Esta é uma consideração de alta prioridade
+    para impulsionar a expansão e o conflito.
+    """
+
+    def calculate_utility(
+        self, character_doc: dict, world_state: dict, blackboard: dict
+    ) -> float:
+        # Personagens com fome crítica ou pouca energia devem focar em sobrevivência imediata.
+        if (
+            character_doc.get("vitals", {}).get("fome", 0) > 70
+            or character_doc.get("vitals", {}).get("energia", 100) < 30
+        ):
+            return 0.0
+
+        # Personagens em combate não devem iniciar missões de coleta.
+        if blackboard.get("enemies_in_range"):
+            return 0.0
+
+        # 1. Identificar o território atual do personagem
+        char_pos = character_doc["position"]
+        home_territory = get_territory_at_position(
+            world_state["all_territories"], char_pos["x"], char_pos["y"]
+        )
+
+        # Só executa a lógica se o personagem estiver em um território do seu clã
+        if not home_territory or home_territory.get(
+            "owner_clan_id"
+        ) != character_doc.get("clan", {}).get("id"):
+            return 0.0
+
+        # 2. Mapear quais categorias de recursos estão disponíveis no território natal
+        local_resource_categories = set()
+        for node in world_state.get("all_resource_nodes", []):
+            node_pos = node["position"]
+            if (
+                home_territory["start_x"] <= node_pos["x"] <= home_territory["end_x"]
+                and home_territory["start_y"]
+                <= node_pos["y"]
+                <= home_territory["end_y"]
+            ):
+                local_resource_categories.add(node.get("category"))
+
+        # 3. Definir recursos essenciais e encontrar o que está faltando
+        ESSENTIAL_CATEGORIES = ["MADEIRA", "PEDRA", "COMIDA"]
+        needed_category = None
+        for category in ESSENTIAL_CATEGORIES:
+            if category not in local_resource_categories:
+                needed_category = category
+                break  # Encontrou o primeiro recurso essencial em falta
+
+        if not needed_category:
+            return (
+                0.0  # O território tem tudo o que é essencial, sem necessidade de sair.
+            )
+
+        # 4. Se um recurso é necessário, calcular a pontuação de utilidade
+        blackboard["needed_resource_category"] = needed_category
+
+        # Pontuação base alta para tornar esta uma prioridade
+        base_desire = 180.0
+
+        # Modificadores de personalidade
+        ganancia = character_doc.get("personality", {}).get("ganancia", 50)
+        bravura = character_doc.get("personality", {}).get("bravura", 50)
+        cautela = character_doc.get("personality", {}).get("cautela", 50)
+
+        # Ganância e Bravura aumentam a vontade de se aventurar. Cautela diminui.
+        personality_modifier = (
+            1.0
+            + ((ganancia - 50) / 100.0)
+            + ((bravura - 50) / 100.0)
+            - ((cautela - 50) / 100.0)
+        )
+
+        final_score = base_desire * personality_modifier
+
+        return max(0.0, final_score)
+
+
+class InvadeEnemyTerritoryAction(Node):
+    """
+    Faz o personagem se mover em direção ao centro de um território inimigo.
+    """
+
+    def tick(
+        self, character_doc, world_state, blackboard, events_to_create, bulk_updates
+    ):
+        target_territory = blackboard.get("target_invasion_territory")
+        if not target_territory:
+            return NodeStatus.FAILURE
+
+        # Calcula o centro do território alvo
+        center_x = (target_territory["start_x"] + target_territory["end_x"]) / 2
+        center_y = (target_territory["start_y"] + target_territory["end_y"]) / 2
+        target_pos = {"x": center_x, "y": center_y}
+
+        is_moving, new_pos = move_towards_position(
+            character_doc["position"],
+            target_pos,
+            world_state["world"],
+            stop_distance=20.0,
+        )
+
+        if is_moving:
+            bulk_updates.append(
+                UpdateOne(
+                    {"_id": character_doc["_id"]},
+                    {
+                        "$set": {"position": new_pos},
+                        "$inc": {"vitals.energia": -MOVE_ENERGY_COST},
+                    },
+                )
+            )
+            return NodeStatus.RUNNING
 
         return NodeStatus.SUCCESS
+
+
+# class InvadeConsideration(Consideration):
+#     def calculate_utility(self, character_doc, world_state, blackboard):
+#         if character_doc.get("vitals", {}).get("fome", 0) > 50:
+#             return 0.0
+#         if character_doc.get("current_health", 0) < 80:
+#             return 0.0
+
+#         if blackboard.get("enemies_in_range"):
+#             return 0.0
+
+#         bravura = character_doc.get("personality", {}).get("bravura", 50)
+#         ganancia = character_doc.get("personality", {}).get("ganancia", 50)
+
+#         if bravura < 60 or ganancia < 60:
+#             return 0.0
+
+#         my_clan = character_doc.get("clan", {}).get("id")
+
+#         enemy_territories = [
+#             t
+#             for t in world_state["all_territories"]
+#             if t.get("owner_clan_id") != my_clan
+#         ]
+
+#         if not enemy_territories:
+#             return 0.0
+
+#         target_terr = random.choice(enemy_territories)
+#         blackboard["target_invasion_territory"] = target_terr
+
+#         random_impulse = random.uniform(0, 50)
+
+#         return 150.0 + random_impulse
+
+
+class InvadeConsideration(Consideration):
+    def calculate_utility(self, character_doc, world_state, blackboard):
+        if blackboard.get("enemies_in_range"):
+            return 0.0
+
+        my_clan = character_doc.get("clan", {}).get("id")
+
+        enemy_terrs = [
+            t
+            for t in world_state["all_territories"]
+            if t.get("owner_clan_id") != my_clan
+        ]
+
+        if not enemy_terrs:
+            return 0.0
+
+        target = random.choice(enemy_terrs)
+        blackboard["target_invasion_territory"] = target
+
+        return 500.0
+
+
+# --- NOVO: Consideração de Defesa (Reação) ---
+class DefendTerritoryConsideration(Consideration):
+    def calculate_utility(self, character_doc, world_state, blackboard):
+        enemies = blackboard.get("enemies_in_range")
+        if not enemies:
+            return 0.0
+
+        char_pos = character_doc["position"]
+        home_territory = get_territory_at_position(
+            world_state["all_territories"], char_pos["x"], char_pos["y"]
+        )
+        my_clan = character_doc.get("clan", {}).get("id")
+
+        # Se estou no meu território e há inimigos
+        if home_territory and home_territory.get("owner_clan_id") == my_clan:
+            # Verifica se o inimigo também está no meu território (invasão real)
+            invader = False
+            for e in enemies:
+                e_terr = get_territory_at_position(
+                    world_state["all_territories"],
+                    e["position"]["x"],
+                    e["position"]["y"],
+                )
+                if e_terr and e_terr["_id"] == home_territory["_id"]:
+                    invader = True
+                    break
+
+            if invader:
+                bravura = character_doc.get("personality", {}).get("bravura", 50)
+                return 600.0 + (bravura * 2)  # Defesa furiosa (Alta prioridade)
+
+        return 0.0

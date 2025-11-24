@@ -1,10 +1,10 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
+from bson import ObjectId
 
 from app.auth import ALGORITHM, SECRET_KEY
 from app.dependencies import get_db
-from app.schemas.types import PyObjectId
 
 from .routes import (
     characters,
@@ -20,7 +20,6 @@ from .routes import (
     worlds,
     analysis,
 )
-
 from .simulation.connection_manager import manager
 
 app = FastAPI(
@@ -43,6 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ... Seus app.include_router ...
 print("Incluindo roteadores da API...")
 app.include_router(worlds.router)
 app.include_router(species.router)
@@ -56,8 +56,6 @@ app.include_router(clan_relationships.router)
 app.include_router(resource_types.router)
 app.include_router(users.router)
 app.include_router(analysis.router)
-
-
 print("Roteadores incluídos com sucesso.")
 
 
@@ -68,11 +66,9 @@ def read_root():
 
 @app.websocket("/ws/{world_id}")
 async def websocket_endpoint(websocket: WebSocket, world_id: str):
-
     token = websocket.query_params.get("token")
-    await websocket.accept()
 
-    if token is None:
+    if not token:
         await websocket.close(
             code=status.WS_1008_POLICY_VIOLATION, reason="Token não fornecido."
         )
@@ -81,7 +77,7 @@ async def websocket_endpoint(websocket: WebSocket, world_id: str):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
-        if email is None:
+        if not email:
             await websocket.close(
                 code=status.WS_1008_POLICY_VIOLATION, reason="Token inválido."
             )
@@ -93,32 +89,39 @@ async def websocket_endpoint(websocket: WebSocket, world_id: str):
         return
 
     db = get_db()
+    user = await db.users.find_one({"email": email})
 
-    user = db.users.find_one({"email": email})
-
-    if user is None:
+    if not user:
         await websocket.close(
             code=status.WS_1008_POLICY_VIOLATION, reason="Usuário não encontrado."
         )
         return
 
     try:
-        world_obj_id = PyObjectId(world_id)
-        world = db.worlds.find_one({"_id": world_obj_id, "user_id": user["_id"]})
+        # CORREÇÃO: Usar o ObjectId padrão da biblioteca bson, que é 100% compatível com o pymongo.
+        world_obj_id = ObjectId(world_id)
+
+        # A query crucial, agora usando tipos de dados consistentes.
+        # user["_id"] é um ObjectId nativo do banco de dados.
+        world = await db.worlds.find_one({"_id": world_obj_id, "user_id": user["_id"]})
+
         if not world:
+            # Se chegar aqui, significa que o user_id no documento do mundo não corresponde
+            # ao _id do usuário logado.
             await websocket.close(
                 code=status.WS_1008_POLICY_VIOLATION,
                 reason="Acesso ao mundo não autorizado.",
             )
             return
-    except Exception:
+    except InvalidId:
         await websocket.close(
             code=status.WS_1008_POLICY_VIOLATION, reason="ID do mundo inválido."
         )
         return
 
+    # Se todas as verificações passaram, a conexão é aceita
     await manager.connect(websocket, world_id)
-    print(f"Cliente autenticado ({user['email']}) conectado ao mundo {world_id}")
+    print(f"✅ Cliente autenticado ({user['email']}) conectado ao mundo {world_id}")
 
     try:
         while True:
