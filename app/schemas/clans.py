@@ -1,52 +1,50 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Optional
 
-# Estes schemas Pydantic definem a estrutura de dados para a entidade 'Clan'.
-# O FastAPI os utiliza para validar, serializar e documentar os dados
-# relacionados a clãs que são trocados através da API.
+
+class EmbeddedSpeciesInfo(BaseModel):
+    """
+    Uma representação simplificada da espécie, para ser embutida
+    nas respostas da API sobre clãs.
+    """
+
+    id: int
+    name: str
+
 
 class ClanBase(BaseModel):
     """
-    Schema base para um Clã.
-    Este modelo contém os campos essenciais que são necessários tanto para
-    criar um novo clã quanto para exibi-lo em uma resposta da API.
+    Schema base com os campos essenciais para um clã.
     """
-    # O nome único do clã (ex: "Clã da Rocha", "Tribo do Rio").
+
     name: str
-    
-    # A chave estrangeira que associa este clã a uma espécie principal.
-    # Isso pode ser usado para definir que um clã é predominantemente de uma
-    # certa espécie (ex: um clã de Orcs, um clã de Elfos).
     species_id: int
+    world_id: int
+
 
 class ClanCreate(ClanBase):
     """
-    Schema usado para validar os dados de entrada ao criar um novo clã.
-    Ele herda todos os campos do `ClanBase`.
-    
-    Manter esta classe separada é uma boa prática, pois permite adicionar
-    validações ou campos específicos para o processo de criação no futuro,
-    sem afetar os outros schemas.
+
+    Schema usado para validar os dados ao criar um novo clã via API.
+    Herda todos os campos do ClanBase.
     """
+
     pass
 
-class Clan(ClanBase):
+
+class ClanResponse(BaseModel):
     """
-    Schema completo para representar um Clã, geralmente usado em respostas da API.
-    Ele herda os campos do `ClanBase` e adiciona os campos que são gerados
-    e gerenciados pelo banco de dados, como o ID.
+    Este é o novo schema de resposta da API para um clã.
+    Ele representa um documento da coleção `clans` e enriquece os dados
+    com informações da espécie.
     """
-    # O ID único do clã, gerado automaticamente pelo banco de dados.
-    # Este campo é usado para identificar o clã de forma única em toda a aplicação.
-    id: int
+
+    id: int = Field(..., alias="_id")
+    name: str
+    world_id: int
+
+    species: EmbeddedSpeciesInfo
 
     class Config:
-        """
-        Configurações internas para o comportamento do modelo Pydantic.
-        """
-        # A configuração `from_attributes = True` (anteriormente `orm_mode = True`)
-        # é fundamental para a integração com ORMs como o SQLAlchemy.
-        # Ela permite que o Pydantic leia os dados diretamente dos atributos de um
-        # objeto de modelo do SQLAlchemy (ex: clan.id, clan.name), facilitando
-        # a conversão do objeto do banco de dados para um formato JSON válido
-        # que pode ser enviado como resposta da API.
         from_attributes = True
+        populate_by_name = True

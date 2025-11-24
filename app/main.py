@@ -1,106 +1,131 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from jose import JWTError, jwt
+from bson import ObjectId
 
-# Importa o 'engine' e a 'Base' do SQLAlchemy, configurados no arquivo database.py.
-from .database.database import engine, Base
+from app.auth import ALGORITHM, SECRET_KEY
+from app.dependencies import get_db
 
-# Importa os módulos de rotas (APIRouters) que definem os endpoints da API.
 from .routes import (
-    species,
     characters,
+    clan_relationships,
     clans,
-    world,
     events,
-    relationships,
-    game_elements,
     missions,
+    resource_types,
+    species_relationships,
+    species,
+    storyteller,
+    users,
+    worlds,
+    analysis,
 )
-
-# Importa o gerenciador de conexões WebSocket.
 from .simulation.connection_manager import manager
 
-# --- Inicialização do Banco de Dados ---
-# Esta linha é crucial. Ela instrui o SQLAlchemy a olhar todos os modelos que
-# herdam da classe 'Base' (definidos em models.py) e a criar as tabelas
-# correspondentes no banco de dados conectado ao 'engine', caso elas ainda não existam.
-# Isso efetivamente cria o seu esquema de banco de dados na primeira vez que a aplicação é executada.
-Base.metadata.create_all(bind=engine)
-
-# --- Criação da Instância Principal do FastAPI ---
-# 'app' é a instância principal da sua aplicação web.
 app = FastAPI(
-    # Estes metadados são usados para gerar a documentação automática da API (ex: em /docs).
-    title="Orbis Life Simulator API",
-    description="API para gerenciar a simulação de vida do projeto Orbis.",
-    version="0.1.0",
+    title="Orbis Life Simulator API (MongoDB Edition)",
+    description="API para gerenciar a simulação de vida do projeto Orbis com arquitetura de Big Data.",
+    version="0.2.0",
 )
 
-# ===================================================================
-# --- Configuração do Middleware CORS ---
-# O CORS (Cross-Origin Resource Sharing) é um mecanismo de segurança do navegador
-# que impede que uma página web (ex: seu frontend em React rodando em localhost:3000)
-# faça requisições para uma API em uma origem diferente (ex: sua API em localhost:8000).
-# Este middleware informa ao navegador que é seguro permitir requisições das origens listadas.
-# ===================================================================
-# Lista de origens (domínios) que têm permissão para acessar esta API.
 origins = [
     "http://localhost",
-    "http://localhost:3000",  # Comum para create-react-app
-    "http://localhost:5173",  # Comum para Vite.js
+    "http://localhost:3000",
+    "http://localhost:5173",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  # Permite as origens listadas.
-    allow_credentials=True,  # Permite o envio de cookies.
-    allow_methods=["*"],  # Permite todos os métodos HTTP (GET, POST, PUT, etc.).
-    allow_headers=["*"],  # Permite todos os cabeçalhos HTTP.
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-# ===================================================================
 
-# --- Inclusão das Rotas Modulares ---
-# Em vez de definir todos os endpoints neste arquivo, nós os organizamos em
-# "routers" separados por funcionalidade. Aqui, incluímos esses routers na
-# aplicação principal. Isso torna o código mais limpo e organizado.
+# ... Seus app.include_router ...
+print("Incluindo roteadores da API...")
+app.include_router(worlds.router)
 app.include_router(species.router)
-app.include_router(characters.router)
 app.include_router(clans.router)
-app.include_router(world.router)
+app.include_router(characters.router)
 app.include_router(events.router)
-app.include_router(relationships.router)
-app.include_router(game_elements.router)
 app.include_router(missions.router)
+app.include_router(storyteller.router)
+app.include_router(species_relationships.router)
+app.include_router(clan_relationships.router)
+app.include_router(resource_types.router)
+app.include_router(users.router)
+app.include_router(analysis.router)
+print("Roteadores incluídos com sucesso.")
 
 
-# --- Rota Raiz (Root Endpoint) ---
 @app.get("/", tags=["Root"])
 def read_root():
-    """
-    Endpoint simples para verificar se a API está funcionando.
-    """
-    return {"message": "Bem-vindo à API do mundo de Orbis!"}
+    return {"message": "Bem-vindo à API do mundo de Orbis (MongoDB Edition)!"}
 
 
-# --- Endpoint WebSocket ---
 @app.websocket("/ws/{world_id}")
-async def websocket_endpoint(websocket: WebSocket, world_id: int):
-    """
-    Endpoint para a comunicação em tempo real via WebSocket.
-    Clientes (como o frontend) podem se conectar a esta rota para receber
-    atualizações do estado da simulação de um mundo específico.
-    """
-    # Usa o nosso gerenciador de conexões para registrar o novo cliente.
-    await manager.connect(websocket, world_id)
+async def websocket_endpoint(websocket: WebSocket, world_id: str):
+    token = websocket.query_params.get("token")
 
-    # O bloco try...except é o padrão para lidar com o ciclo de vida do WebSocket.
+    if not token:
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION, reason="Token não fornecido."
+        )
+        return
+
     try:
-        # Mantém a conexão viva em um loop infinito.
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if not email:
+            await websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION, reason="Token inválido."
+            )
+            return
+    except JWTError:
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION, reason="Token inválido ou expirado."
+        )
+        return
+
+    db = get_db()
+    user = await db.users.find_one({"email": email})
+
+    if not user:
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION, reason="Usuário não encontrado."
+        )
+        return
+
+    try:
+        # CORREÇÃO: Usar o ObjectId padrão da biblioteca bson, que é 100% compatível com o pymongo.
+        world_obj_id = ObjectId(world_id)
+
+        # A query crucial, agora usando tipos de dados consistentes.
+        # user["_id"] é um ObjectId nativo do banco de dados.
+        world = await db.worlds.find_one({"_id": world_obj_id, "user_id": user["_id"]})
+
+        if not world:
+            # Se chegar aqui, significa que o user_id no documento do mundo não corresponde
+            # ao _id do usuário logado.
+            await websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason="Acesso ao mundo não autorizado.",
+            )
+            return
+    except InvalidId:
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION, reason="ID do mundo inválido."
+        )
+        return
+
+    # Se todas as verificações passaram, a conexão é aceita
+    await manager.connect(websocket, world_id)
+    print(f"✅ Cliente autenticado ({user['email']}) conectado ao mundo {world_id}")
+
+    try:
         while True:
-            # Espera por uma mensagem do cliente. Neste caso, o servidor não faz
-            # nada com a mensagem recebida, mas esta linha é essencial para
-            # manter a conexão aberta e detectar quando o cliente se desconecta.
             await websocket.receive_text()
     except WebSocketDisconnect:
-        # Se o cliente fechar a conexão, uma exceção WebSocketDisconnect é levantada.
-        # Nós a capturamos para remover o cliente da nossa lista de conexões ativas.
         manager.disconnect(websocket, world_id)
+        print(f"Cliente ({user['email']}) desconectado do mundo {world_id}")
