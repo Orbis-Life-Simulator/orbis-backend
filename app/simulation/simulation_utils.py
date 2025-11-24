@@ -2,8 +2,10 @@ import math
 import random
 import uuid
 from datetime import datetime, timezone
-from pymongo.database import Database
+from bson import ObjectId
+from motor.motor_asyncio import AsyncIOMotorDatabase as Database
 import asyncio
+from bson.errors import InvalidId
 
 from .constants import *
 
@@ -385,19 +387,121 @@ async def check_and_update_mission_progress(
             await asyncio.gather(*update_tasks)
 
 
-def create_event(world_id: int, event_type: str, payload: dict) -> dict:
+def create_event(world_id: any, event_type: str, payload: dict) -> dict:
     """
-    Cria um documento de evento padronizado, conforme especificado no relatório de Big Data.
-    Esta função substitui a antiga 'log_event'. Ela não modifica listas,
-    apenas cria e retorna um novo dicionário de evento.
+    Cria um documento de evento padronizado. Garante que todos os campos de ID
+    sejam salvos como ObjectId para consistência de dados e análise com Spark.
     """
-    return {
+
+    # --- Função auxiliar interna para conversão segura de ID ---
+    def to_object_id(value: any) -> ObjectId | None:
+        if isinstance(value, ObjectId):
+            return value
+        if isinstance(value, str) and len(value) == 24:
+            try:
+                return ObjectId(value)
+            except InvalidId:
+                return None
+        return None
+
+    # --- Normalização e Extração de Campos ---
+
+    # Garante que o worldId principal seja sempre um ObjectId
+    world_id_obj = to_object_id(world_id)
+
+    # Extrai informações do Ator (character/attacker)
+    actor_obj = (
+        payload.get("character") or payload.get("attacker") or payload.get("parent_a")
+    )
+    character_id = None
+    character_species = None
+    character_species_id = None
+    actor_clan_id = None
+    if isinstance(actor_obj, dict):
+        character_id = to_object_id(actor_obj.get("id"))
+        if isinstance(actor_obj.get("species"), dict):
+            character_species = actor_obj["species"].get("name")
+            character_species_id = actor_obj["species"].get(
+                "id"
+            )  # Assumindo que este ID é int
+        if isinstance(actor_obj.get("clan"), dict):
+            actor_clan_id = to_object_id(actor_obj["clan"].get("id"))
+
+    # Extrai informações do Alvo (target/defender)
+    target_obj = (
+        payload.get("defender") or payload.get("target") or payload.get("parent_b")
+    )
+    target_id = None
+    target_species = None
+    target_clan_id = None
+    if isinstance(target_obj, dict):
+        target_id = to_object_id(target_obj.get("id"))
+        if isinstance(target_obj.get("species"), dict):
+            target_species = target_obj["species"].get("name")
+        if isinstance(target_obj.get("clan"), dict):
+            target_clan_id = to_object_id(target_obj["clan"].get("id"))
+
+    # Extrai informações de Recursos
+    resource_type_id = None
+    resource_type_name = None
+    resource_obj = (
+        payload.get("resource_node")
+        or payload.get("resource")
+        or payload.get("resource_type")
+    )
+    if isinstance(resource_obj, dict):
+        # O ID do tipo de recurso é um int, não ObjectId
+        resource_type_id = (
+            resource_obj.get("type_id")
+            or resource_obj.get("resource_type_id")
+            or resource_obj.get("id")
+        )
+        resource_type_name = resource_obj.get("name") or resource_obj.get("type_name")
+
+    # Extrai localização
+    location = None
+    loc_obj = (
+        payload.get("location") or payload.get("to_pos") or payload.get("from_pos")
+    )
+    if isinstance(loc_obj, dict) and "x" in loc_obj and "y" in loc_obj:
+        location = {"x": float(loc_obj.get("x")), "y": float(loc_obj.get("y"))}
+
+    # Define a categoria do evento
+    event_category = "OTHER"
+    if event_type in ("COMBAT_ACTION", "CHARACTER_DEATH"):
+        event_category = "COMBAT"
+    elif event_type in ("CHARACTER_GATHER", "CHARACTER_EAT"):
+        event_category = "RESOURCE"
+    elif event_type == "CHARACTER_BIRTH":
+        event_category = "LIFE"
+    elif "MOVE" in event_type or "FLEE" in event_type:
+        event_category = "MOVEMENT"
+    elif event_type == "CHARACTER_BUILD_HOUSE":
+        event_category = "BUILD"
+    elif event_type == "AI_DECISION":
+        event_category = "AI"
+
+    # Monta o documento final do evento com os tipos de dados corretos
+    evt = {
         "eventId": str(uuid.uuid4()),
-        "worldId": world_id,
+        "worldId": world_id_obj,  # Salvo como ObjectId
         "timestamp": datetime.now(timezone.utc),
         "eventType": event_type,
+        "eventCategory": event_category,
+        "characterId": character_id,  # ObjectId
+        "characterSpecies": character_species,
+        "characterSpeciesId": character_species_id,  # Int
+        "actorClanId": actor_clan_id,  # ObjectId
+        "targetId": target_id,  # ObjectId
+        "targetSpecies": target_species,
+        "targetClanId": target_clan_id,  # ObjectId
+        "resourceTypeId": resource_type_id,  # Int
+        "resourceTypeName": resource_type_name,
+        "location": location,
         "payload": payload,
     }
+
+    return evt
 
 
 def create_relationship_update_operation(
@@ -434,36 +538,46 @@ def create_relationship_update_operation(
     return update_operation
 
 
-def create_new_character_document(db: Database, world_id, parent_a_doc, parent_b_doc):
+async def create_new_character_document(
+    db: Database, world_id, parent_a_doc, parent_b_doc
+) -> dict:
     """
     Cria o documento completo para um novo personagem nascido na simulação.
+    Agora, o _id é gerado automaticamente pelo MongoDB.
     """
-    last_char = db.characters.find_one(sort=[("_id", -1)])
-    new_id = (last_char["_id"] + 1) if last_char else 1
-
     species_doc = parent_a_doc["species"]
 
+    # Copia a posição para evitar compartilhar a referência com o pai
+    parent_position = parent_a_doc.get("position", {"x": 0, "y": 0})
+    new_pos = {"x": parent_position.get("x", 0), "y": parent_position.get("y", 0)}
+
+    # --- CORREÇÃO PRINCIPAL AQUI ---
+    # Removemos a lógica manual de ID. O MongoDB irá gerar um ObjectId único
+    # quando o documento for inserido.
     new_char_doc = {
-        "_id": new_id,
-        "name": f"{species_doc['name']} {new_id}",
+        # "_id" foi removido daqui
+        "name": f"{species_doc['name']} Nascido",  # Um nome temporário
         "world_id": world_id,
         "gender": random.choice(["masculino", "feminino"]),
         "status": "VIVO",
         "species": species_doc,
         "clan": parent_a_doc.get("clan"),
+        "parents": [parent_a_doc.get("_id"), parent_b_doc.get("_id")],
         "current_health": species_doc["base_health"],
-        "position": parent_a_doc["position"],
+        "position": new_pos,
         "vitals": {"fome": 0, "energia": 100, "idade": 0},
         "personality": {
-            "bravura": 50,
-            "cautela": 50,
-            "sociabilidade": 50,
-            "ganancia": 50,
-            "inteligencia": 50,
+            "bravura": random.randint(25, 75),
+            "cautela": random.randint(25, 75),
+            "sociabilidade": random.randint(25, 75),
+            "ganancia": random.randint(25, 75),
+            "inteligencia": random.randint(25, 75),
         },
         "stats": {"kills": 0, "deaths": 0, "damageDealt": 0, "resourcesCollected": 0},
+        "children_count": 0,
         "inventory": [],
         "notableEvents": [],
         "lastUpdate": datetime.now(timezone.utc),
+        "created_at": datetime.now(timezone.utc),
     }
     return new_char_doc
