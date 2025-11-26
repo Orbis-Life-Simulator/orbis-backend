@@ -1,10 +1,25 @@
+# Framework Web e Servidor
 fastapi
 uvicorn[standard]
-sqlalchemy
-pydantic
-alembic
-databases
-python-dotenv
-websockets
-google-genai
+python-multipart  # Necessário para o login (Form Data)
+
+# Banco de Dados (MongoDB Async)
+motor
 pymongo
+
+# Variáveis de Ambiente
+python-dotenv
+
+# Autenticação e Segurança
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt==3.2.2
+
+# Inteligência Artificial (Gemini)
+google-generativeai
+
+# Análise de Dados
+pandas
+
+# Utilitários
+websockets
