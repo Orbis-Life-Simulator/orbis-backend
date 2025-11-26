@@ -24,11 +24,8 @@ Siga os passos abaixo para configurar e executar o servidor da API em sua máqui
 ### 2. Clone e Configure o Ambiente
 
 ```bash
-# Clone este repositório para sua máquina local
-git clone <URL_DO_SEU_REPOSITORIO>
-
 # Navegue para o diretório do projeto
-cd <NOME_DO_DIRETORIO>
+cd orbis-backend
 
 # Crie um ambiente virtual para isolar as dependências
 python -m venv venv
