@@ -8,10 +8,19 @@ from datetime import datetime, timezone
 
 
 def get_db_connection():
+    """Conecta ao MongoDB e retorna o objeto do banco de dados."""
     load_dotenv()
     MONGO_URI = os.getenv("MONGO_URI")
+    if not MONGO_URI:
+        raise ValueError("MONGO_URI não encontrada no arquivo .env")
+
     client = pymongo.MongoClient(MONGO_URI)
-    return client.get_default_database()
+
+    try:
+        return client.get_default_database()
+    except Exception:
+        print("Aviso: Nome do banco não encontrado na URI. Usando 'orbis' como padrão.")
+        return client["orbis"]
 
 
 def main():
