@@ -73,8 +73,8 @@ Para que a aplicação funcione, é **obrigatório** criar um arquivo de configu
 # Se não tiver uma, pode deixar em branco, mas a funcionalidade de chat não funcionará.
 GEMINI_API_KEY=sua_chave_aqui
 
-# String de conexão do MongoDB (Local ou Atlas)
-MONGO_URI=mongodb://localhost:27017/orbis_db
+
+MONGO_URI=# String de conexão do MongoDB (Local ou Atlas)
 ```
 
 ### 5. Instale as Dependências
