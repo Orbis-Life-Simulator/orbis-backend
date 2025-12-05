@@ -1,4 +1,4 @@
-from databases import Database
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from typing import List
@@ -102,7 +102,7 @@ async def _create_resource_nodes_for_world(
 )
 async def create_custom_world(
     world_data: CustomWorldCreate,
-    db: Database = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """
