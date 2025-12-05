@@ -74,7 +74,7 @@ Para que a aplicação funcione, é **obrigatório** criar um arquivo de configu
 GEMINI_API_KEY=sua_chave_aqui
 
 
-MONGO_URI=# String de conexão do MongoDB (Local ou Atlas)
+MONGO_URI=# String de conexão do MongoDB
 ```
 
 ### 5. Instale as Dependências
