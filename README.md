@@ -49,7 +49,7 @@ A ativação depende do seu sistema operacional e do terminal que você está us
   Execute o script de ativação diretamente.
 
   ```powershell
-  venv\Scripts\activate
+  .\venv\Scripts\activate
   ```
 
 ### 4. Configuração de Variáveis de Ambiente (.env)
@@ -74,15 +74,7 @@ Com o ambiente virtual ativado e o `.env` criado, instale as bibliotecas necess�
 pip install -r requirements.txt
 ```
 
-### 6. Popule o Banco de Dados
-
-Para que a simulação tenha dados iniciais (espécies, clãs, recursos, etc.), execute o script de "seeding":
-
-```bash
-python seed_db.py
-```
-
-### 7. Inicie o Servidor
+### 6. Inicie o Servidor
 
 Use o Uvicorn para iniciar o servidor de desenvolvimento do FastAPI. A flag `--reload` faz com que o servidor reinicie automaticamente sempre que você salvar uma alteração no código.
 
@@ -92,7 +84,7 @@ uvicorn app.main:app --reload
 
 A API estará rodando e acessível em `http://127.0.0.1:8000`. Para ver a documentação interativa e testar os endpoints, acesse `http://127.0.0.1:8000/docs`.
 
-### 8. Pare o Servidor e Desative o Ambiente
+### 7. Pare o Servidor e Desative o Ambiente
 
 - Para **parar o servidor**, volte ao terminal onde ele está rodando e pressione **`Ctrl+C`**.
 - Quando terminar de trabalhar no projeto, você pode **desativar o ambiente virtual** com o comando:
